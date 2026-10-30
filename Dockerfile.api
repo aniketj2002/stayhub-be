@@ -1,0 +1,39 @@
+# syntax=docker/dockerfile:1
+FROM golang:1.26-alpine AS builder
+
+WORKDIR /src
+RUN apk add --no-cache ca-certificates tzdata
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/stayhub-api ./cmd/api && \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/stayhub-migrate ./cmd/migrate && \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/stayhub-seed ./cmd/seed
+
+FROM alpine:3.20
+
+RUN apk add --no-cache ca-certificates tzdata wget && \
+    addgroup -S stayhub && adduser -S stayhub -G stayhub
+
+WORKDIR /app
+
+COPY --from=builder /out/stayhub-api /app/stayhub-api
+COPY --from=builder /out/stayhub-migrate /app/stayhub-migrate
+COPY --from=builder /out/stayhub-seed /app/stayhub-seed
+COPY --from=builder /src/migrations /app/migrations
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+
+RUN chmod +x /app/docker-entrypoint.sh && \
+    mkdir -p /app/data/media/uploads && \
+    chown -R stayhub:stayhub /app
+
+USER stayhub
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:8080/healthz || exit 1
+
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
