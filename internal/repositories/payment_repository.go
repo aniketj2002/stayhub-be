@@ -285,10 +285,12 @@ func (r *PaymentRepository) ListPayoutsByListingIDs(ctx context.Context, listing
 			p.release_at, p.released_at, p.held_reason,
 			p.idempotency_key, p.simulated_ref, p.created_at, p.updated_at,
 			res.code, res.listing_id, COALESCE(lv.title, 'Untitled Listing'),
-			to_char(res.check_in, 'YYYY-MM-DD'), to_char(res.check_out, 'YYYY-MM-DD')
+			to_char(res.check_in, 'YYYY-MM-DD'), to_char(res.check_out, 'YYYY-MM-DD'),
+			COALESCE(u.full_name, 'Guest')
 		FROM payouts p
 		JOIN reservations res ON res.id = p.reservation_id
 		LEFT JOIN listing_versions lv ON lv.id = res.listing_version_id
+		LEFT JOIN users u ON u.id = res.guest_id
 		WHERE res.listing_id = ANY($1)
 		ORDER BY p.created_at DESC
 	`
@@ -322,6 +324,7 @@ func (r *PaymentRepository) ListPayoutsByListingIDs(ctx context.Context, listing
 			&item.ListingTitle,
 			&item.CheckIn,
 			&item.CheckOut,
+			&item.GuestName,
 		); err != nil {
 			return nil, fmt.Errorf("scan earnings payout item: %w", err)
 		}

@@ -80,6 +80,7 @@ type EarningsPayoutItem struct {
 	ListingTitle    string        `json:"listing_title"`
 	CheckIn         string        `json:"check_in"`
 	CheckOut        string        `json:"check_out"`
+	GuestName       string        `json:"guest_name,omitempty"`
 }
 
 type HostEarningsResponse struct {
