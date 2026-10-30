@@ -222,11 +222,11 @@ func (s *SearchService) GetPublicListingDetail(ctx context.Context, listingID uu
 		}
 	}
 
-	// Load upcoming 180 days of unavailable calendar dates
+	// Load upcoming 365 days of unavailable calendar dates
 	now := s.clock.Now().UTC()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	unavailable := make([]dtos.CalendarNightEntry, 0)
-	if calRows, err := s.calendarRepo.ListRange(ctx, listingID, today, today.AddDate(0, 0, 180)); err == nil {
+	if calRows, err := s.calendarRepo.ListRange(ctx, listingID, today, today.AddDate(1, 0, 0)); err == nil {
 		for _, r := range calRows {
 			unavailable = append(unavailable, dtos.CalendarNightEntry{
 				Night:  r.Night.Format("2006-01-02"),
