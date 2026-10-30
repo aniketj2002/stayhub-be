@@ -1,0 +1,94 @@
+name: Backend CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+  PREFIX: ${{ vars.PREFIX || 'aniket' }}
+
+jobs:
+  test:
+    name: Run Unit & Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache: true
+
+      - name: Run Backend Tests
+        run: go test -v -race ./...
+
+  deploy:
+    name: Build, Push & Deploy to ECS
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build & Push API Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.api
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.PREFIX }}-ecr-api:latest
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.PREFIX }}-ecr-api:${{ github.sha }}
+
+      - name: Build & Push Worker Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.worker
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.PREFIX }}-ecr-worker:latest
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.PREFIX }}-ecr-worker:${{ github.sha }}
+
+      - name: Deploy to Amazon ECS
+        run: |
+          CLUSTER_NAME="${PREFIX}-ecs-cluster"
+          API_SERVICE="${PREFIX}-api-service"
+          WORKER_SERVICE="${PREFIX}-worker-service"
+
+          echo "Triggering new deployment for ${API_SERVICE}..."
+          aws ecs update-service \
+            --cluster "${CLUSTER_NAME}" \
+            --service "${API_SERVICE}" \
+            --force-new-deployment \
+            --region "${AWS_REGION}"
+
+          echo "Triggering new deployment for ${WORKER_SERVICE}..."
+          aws ecs update-service \
+            --cluster "${CLUSTER_NAME}" \
+            --service "${WORKER_SERVICE}" \
+            --force-new-deployment \
+            --region "${AWS_REGION}"
