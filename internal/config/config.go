@@ -9,9 +9,12 @@ import (
 	"time"
 )
 
+const DefaultSESSenderEmail = "aniketjindal2002@gmail.com"
+
 type Config struct {
 	AppEnv             string
 	HTTPPort           string
+	AppBaseURL         string
 	CORSAllowedOrigins []string
 
 	DatabaseURL string
@@ -32,6 +35,13 @@ type Config struct {
 	S3SecretKey     string
 	S3SessionToken  string
 	S3UsePathStyle  bool
+
+	AWSRegion          string
+	AWSEndpoint        string
+	SESSenderEmail     string
+	EventBridgeRoleARN string
+	PayoutQueueURL     string
+	PayoutQueueARN     string
 
 	DefaultCurrency                string
 	GuestFeeBPS                    int
@@ -61,9 +71,15 @@ func Load() *Config {
 	s3Endpoint := getEnv("S3_ENDPOINT", fmt.Sprintf("https://s3.%s.amazonaws.com", s3Region))
 	s3PublicBaseURL := getEnv("S3_PUBLIC_BASE_URL", "/api/v1/media/file")
 
+	defaultAppBaseURL := "http://localhost:5173"
+	if len(origins) > 0 {
+		defaultAppBaseURL = origins[len(origins)-1]
+	}
+
 	return &Config{
 		AppEnv:             getEnv("APP_ENV", "development"),
 		HTTPPort:           getEnv("HTTP_PORT", "8080"),
+		AppBaseURL:         strings.TrimRight(getEnvFirst([]string{"APP_BASE_URL", "FRONTEND_BASE_URL"}, defaultAppBaseURL), "/"),
 		CORSAllowedOrigins: origins,
 
 		DatabaseURL: getEnv("DATABASE_URL", "postgres://stayhub:stayhub_dev_pwd@localhost:5432/stayhub?sslmode=disable"),
@@ -84,6 +100,13 @@ func Load() *Config {
 		S3SecretKey:     getEnvFirst([]string{"S3_SECRET_KEY", "AWS_SECRET_ACCESS_KEY"}, ""),
 		S3SessionToken:  getEnvFirst([]string{"S3_SESSION_TOKEN", "AWS_SESSION_TOKEN"}, ""),
 		S3UsePathStyle:  getEnvBool("S3_USE_PATH_STYLE", false),
+
+		AWSRegion:          s3Region,
+		AWSEndpoint:        getEnvFirst([]string{"AWS_ENDPOINT_URL", "AWS_ENDPOINT"}, ""),
+		SESSenderEmail:     DefaultSESSenderEmail,
+		EventBridgeRoleARN: getEnv("EVENTBRIDGE_ROLE_ARN", ""),
+		PayoutQueueURL:     getEnv("PAYOUT_QUEUE_URL", ""),
+		PayoutQueueARN:     getEnv("PAYOUT_QUEUE_ARN", ""),
 
 		DefaultCurrency:                getEnv("DEFAULT_CURRENCY", "EUR"),
 		GuestFeeBPS:                    getEnvInt("GUEST_FEE_BPS", 1400),

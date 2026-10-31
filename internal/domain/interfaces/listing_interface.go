@@ -24,6 +24,7 @@ type ListingRepository interface {
 	CreateVersion(ctx context.Context, v models.ListingVersion) (*models.ListingVersion, error)
 	FindVersionByID(ctx context.Context, id uuid.UUID) (*models.ListingVersion, error)
 	UpdateVersion(ctx context.Context, v models.ListingVersion) (*models.ListingVersion, error)
+	ListVersionsByStatus(ctx context.Context, status enums.VersionStatus) ([]models.ListingVersion, error)
 
 	ReplaceCheckResults(ctx context.Context, versionID uuid.UUID, results []models.ListingCheckResult) ([]models.ListingCheckResult, error)
 	ListCheckResultsByVersion(ctx context.Context, versionID uuid.UUID) ([]models.ListingCheckResult, error)

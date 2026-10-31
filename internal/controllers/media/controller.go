@@ -150,3 +150,35 @@ func (ctrl *Controller) GetMedia(c *gin.Context) {
 
 	response.OK(c, gin.H{"media": res})
 }
+
+// ServeByID redirects or serves media content by UUID at GET /api/v1/media/:id/raw.
+func (ctrl *Controller) ServeByID(c *gin.Context) {
+	mediaID, err := uuid.Parse(strings.TrimSpace(c.Param("id")))
+	if err != nil {
+		response.BadRequest(c, "VALIDATION_ERROR", "id must be a valid UUID", nil)
+		return
+	}
+
+	res, err := ctrl.mediaService.GetByID(c.Request.Context(), mediaID)
+	if err != nil || res == nil {
+		response.NotFound(c, "Media record not found")
+		return
+	}
+
+	if res.S3Key != "" {
+		if localPath, err := ctrl.mediaService.ResolveLocalFilePath(res.S3Key); err == nil {
+			if _, statErr := os.Stat(localPath); statErr == nil {
+				c.Header("Cache-Control", "public, max-age=31536000, immutable")
+				c.File(localPath)
+				return
+			}
+		}
+	}
+
+	if res.PublicURL != "" {
+		c.Redirect(http.StatusTemporaryRedirect, res.PublicURL)
+		return
+	}
+
+	response.NotFound(c, "Media file not found")
+}

@@ -17,8 +17,18 @@ type Listing struct {
 	HostID           uuid.UUID           `db:"host_id" json:"host_id"`
 	Status           enums.ListingStatus `db:"status" json:"status"`
 	LiveVersionID    *uuid.UUID          `db:"live_version_id" json:"live_version_id,omitempty"`
-	WorkingVersionID *uuid.UUID          `db:"working_version_id" json:"working_version_id,omitempty"`
-	CreatedAt        time.Time           `db:"created_at" json:"created_at"`
+	WorkingVersionID    *uuid.UUID          `db:"working_version_id" json:"working_version_id,omitempty"`
+	ICalExportToken     *string             `db:"ical_export_token" json:"ical_export_token,omitempty"`
+	RatingAvg           float64             `db:"rating_avg" json:"rating_avg"`
+	ReviewCount         int                 `db:"review_count" json:"review_count"`
+	RatingCleanliness   *float64            `db:"rating_cleanliness" json:"rating_cleanliness,omitempty"`
+	RatingAccuracy      *float64            `db:"rating_accuracy" json:"rating_accuracy,omitempty"`
+	RatingCheckin       *float64            `db:"rating_checkin" json:"rating_checkin,omitempty"`
+	RatingCommunication *float64            `db:"rating_communication" json:"rating_communication,omitempty"`
+	RatingLocation      *float64            `db:"rating_location" json:"rating_location,omitempty"`
+	RatingValue         *float64            `db:"rating_value" json:"rating_value,omitempty"`
+	IsGuestFavorite     bool                `db:"is_guest_favorite" json:"is_guest_favorite"`
+	CreatedAt           time.Time           `db:"created_at" json:"created_at"`
 	UpdatedAt        time.Time           `db:"updated_at" json:"updated_at"`
 }
 
@@ -72,8 +82,13 @@ type ListingVersion struct {
 	Region             *string             `db:"region" json:"region,omitempty"`
 	Country            *string             `db:"country" json:"country,omitempty"`
 	PostalCode         *string             `db:"postal_code" json:"postal_code,omitempty"`
+	Latitude           *float64            `db:"latitude" json:"latitude,omitempty"`
+	Longitude          *float64            `db:"longitude" json:"longitude,omitempty"`
 	Timezone           string              `db:"timezone" json:"timezone"`
 	MaxGuests          *int                `db:"max_guests" json:"max_guests,omitempty"`
+	Bedrooms           *int                `db:"bedrooms" json:"bedrooms,omitempty"`
+	Beds               *int                `db:"beds" json:"beds,omitempty"`
+	Bathrooms          *float64            `db:"bathrooms" json:"bathrooms,omitempty"`
 	BasePriceMinor     *int64              `db:"base_price_minor" json:"base_price_minor,omitempty"`
 	CleaningFeeMinor   int64               `db:"cleaning_fee_minor" json:"cleaning_fee_minor"`
 	Currency           string              `db:"currency" json:"currency"`
@@ -86,6 +101,8 @@ type ListingVersion struct {
 	MediaIDs           []uuid.UUID         `db:"media_ids" json:"media_ids"`
 	SubmittedAt        *time.Time          `db:"submitted_at" json:"submitted_at,omitempty"`
 	DecidedAt          *time.Time          `db:"decided_at" json:"decided_at,omitempty"`
+	DecidedBy          *uuid.UUID          `db:"decided_by" json:"decided_by,omitempty"`
+	DecisionNote       *string             `db:"decision_note" json:"decision_note,omitempty"`
 	CreatedAt          time.Time           `db:"created_at" json:"created_at"`
 	UpdatedAt          time.Time           `db:"updated_at" json:"updated_at"`
 }
@@ -107,5 +124,6 @@ type ListingCalendar struct {
 	Status        enums.CalendarStatus `db:"status" json:"status"`
 	ReservationID *uuid.UUID           `db:"reservation_id" json:"reservation_id,omitempty"`
 	BlockReason   *string              `db:"block_reason" json:"block_reason,omitempty"`
+	ICalFeedID    *uuid.UUID           `db:"ical_feed_id" json:"ical_feed_id,omitempty"`
 	CreatedAt     time.Time            `db:"created_at" json:"created_at"`
 }

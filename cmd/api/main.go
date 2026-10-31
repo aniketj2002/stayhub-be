@@ -12,6 +12,7 @@ import (
 
 	"github.com/stayhub/backend/internal/config"
 	apphttp "github.com/stayhub/backend/internal/http"
+	platformaws "github.com/stayhub/backend/internal/platform/aws"
 	"github.com/stayhub/backend/internal/platform/clock"
 	"github.com/stayhub/backend/internal/platform/db"
 	"github.com/stayhub/backend/internal/platform/jwt"
@@ -47,7 +48,10 @@ func main() {
 	// Repositories
 	auditRepo := repositories.NewAuditRepository(database)
 	userRepo := repositories.NewUserRepository(database)
-	adminRepo := repositories.NewAdminUserRepository(database)
+	adminUserRepo := repositories.NewAdminUserRepository(database)
+	adminRepo := repositories.NewAdminRepository(database)
+	feeConfigRepo := repositories.NewFeeConfigRepository(database)
+	_ = repositories.NewOutboxRepository(database)
 	refreshRepo := repositories.NewRefreshTokenRepository(database)
 	mediaRepo := repositories.NewMediaRepository(database)
 	listingHostRepo := repositories.NewListingHostRepository(database)
@@ -56,13 +60,29 @@ func main() {
 	calendarRepo := repositories.NewCalendarRepository(database)
 	reservationRepo := repositories.NewReservationRepository(database)
 	paymentRepo := repositories.NewPaymentRepository(database)
+	pricingRepo := repositories.NewPricingRepository(database)
+	icalRepo := repositories.NewICalRepository(database)
+	cohostRepo := repositories.NewCohostRepository(database)
+
+	// AWS EventBridge Scheduler & SES Email Sender
+	payoutScheduler, err := platformaws.NewEventBridgePayoutScheduler(ctx, cfg)
+	if err != nil {
+		log.Printf("warning: EventBridge payout scheduler init error: %v", err)
+	}
+	sesEmailSender, err := platformaws.NewSESEmailSender(ctx, cfg)
+	if err != nil {
+		log.Printf("warning: AWS SES email sender init error: %v", err)
+	}
 
 	// Services
 	auditService := services.NewAuditService(auditRepo, clk)
+	feeConfigService := services.NewFeeConfigService(cfg, feeConfigRepo, auditService, clk)
+	ledgerService := services.NewLedgerService(paymentRepo, auditService)
+	payoutService := services.NewPayoutService(cfg, database, rdb, paymentRepo, reservationRepo, ledgerService, auditService, clk, payoutScheduler)
 	authService := services.NewAuthService(
 		database,
 		userRepo,
-		adminRepo,
+		adminUserRepo,
 		refreshRepo,
 		mediaRepo,
 		store,
@@ -85,6 +105,7 @@ func main() {
 		clk,
 	)
 	calendarService := services.NewCalendarService(database, listingRepo, calendarRepo, auditService)
+	pricingService := services.NewPricingService(database, pricingRepo, listingRepo, feeConfigService, clk)
 	searchService := services.NewSearchService(
 		cfg,
 		listingRepo,
@@ -94,6 +115,8 @@ func main() {
 		catalogService,
 		store,
 		clk,
+		pricingService,
+		rdb,
 	)
 	reservationService := services.NewReservationService(
 		cfg,
@@ -110,24 +133,100 @@ func main() {
 		store,
 		auditService,
 		clk,
+		payoutScheduler,
+	)
+	icalService := services.NewICalService(database, icalRepo, calendarRepo, listingRepo, clk)
+	cohostService := services.NewCohostService(database, cohostRepo, listingHostRepo, userRepo, listingRepo, clk, sesEmailSender)
+	if cs, ok := cohostService.(*services.CohostService); ok {
+		cs.SetEmailConfig(sesEmailSender, cfg.AppBaseURL)
+	}
+
+	messagingRepo := repositories.NewMessagingRepository(database)
+	reviewRepo := repositories.NewReviewRepository(database)
+	alterationRepo := repositories.NewReservationAlterationRepository(database)
+	wishlistRepo := repositories.NewWishlistRepository(database)
+
+	messagingService := services.NewMessagingService(database, messagingRepo, reservationRepo, listingRepo, listingHostRepo, userRepo, clk)
+	if ms, ok := messagingService.(*services.MessagingService); ok {
+		ms.SetMediaDependencies(mediaRepo, store)
+	}
+	reviewService := services.NewReviewService(database, reviewRepo, reservationRepo, listingRepo, userRepo, clk)
+	itineraryService := services.NewItineraryService(reservationRepo, listingRepo, listingHostRepo, userRepo, paymentRepo)
+	alterationService := services.NewReservationAlterationService(database, alterationRepo, reservationRepo, calendarRepo, listingRepo, listingHostRepo, pricingService, pricingRepo, paymentRepo, ledgerService, payoutService, clk)
+	if as, ok := alterationService.(*services.ReservationAlterationService); ok {
+		as.SetMessagingService(messagingService)
+	}
+	wishlistService := services.NewWishlistService(wishlistRepo, listingRepo, mediaRepo, store, clk)
+
+	if ps, ok := payoutService.(*services.PayoutService); ok {
+		ps.SetCohostDependencies(listingHostRepo, cohostRepo)
+	}
+
+	if rs, ok := reservationService.(*services.ReservationService); ok {
+		rs.SetFeeConfigService(feeConfigService)
+		rs.SetPricingRepo(pricingRepo)
+		rs.SetMessagingService(messagingService)
+	}
+
+	adminReservationService := services.NewAdminReservationService(
+		database,
+		reservationRepo,
+		paymentRepo,
+		listingRepo,
+		calendarRepo,
+		userRepo,
+		mediaRepo,
+		catalogService,
+		ledgerService,
+		payoutService,
+		auditService,
+		store,
+		clk,
+	)
+	adminReviewService := services.NewAdminListingReviewService(
+		database,
+		listingRepo,
+		userRepo,
+		auditService,
+		clk,
+	)
+	adminService := services.NewAdminService(
+		adminRepo,
+		auditService,
+		clk,
 	)
 
 	router := apphttp.NewRouter(apphttp.ServerDeps{
-		Config:                cfg,
-		DB:                    database,
-		Redis:                 rdb,
-		Clock:                 clk,
-		JWTManager:            jwtMgr,
-		UserRepository:        userRepo,
-		ListingHostRepository: listingHostRepo,
-		AuditService:          auditService,
-		AuthService:           authService,
-		MediaService:          mediaService,
-		CatalogService:        catalogService,
-		ListingService:        listingService,
-		CalendarService:       calendarService,
-		SearchService:         searchService,
-		ReservationService:    reservationService,
+		Config:                       cfg,
+		DB:                           database,
+		Redis:                        rdb,
+		Clock:                        clk,
+		JWTManager:                   jwtMgr,
+		UserRepository:               userRepo,
+		ListingHostRepository:        listingHostRepo,
+		AuditService:                 auditService,
+		AuthService:                  authService,
+		MediaService:                 mediaService,
+		CatalogService:               catalogService,
+		ListingService:               listingService,
+		CalendarService:              calendarService,
+		SearchService:                searchService,
+		ReservationService:           reservationService,
+		AdminRepository:              adminRepo,
+		AdminReservationService:      adminReservationService,
+		AdminListingReviewService:    adminReviewService,
+		AdminService:                 adminService,
+		FeeConfigService:             feeConfigService,
+		PayoutService:                payoutService,
+		LedgerService:                ledgerService,
+		PricingService:               pricingService,
+		ICalService:                  icalService,
+		CohostService:                cohostService,
+		MessagingService:             messagingService,
+		ReviewService:                reviewService,
+		ItineraryService:             itineraryService,
+		ReservationAlterationService: alterationService,
+		WishlistService:              wishlistService,
 	})
 
 	srv := &http.Server{

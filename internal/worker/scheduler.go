@@ -29,6 +29,7 @@ type Scheduler struct {
 	clock              clock.Clock
 	pollInterval       time.Duration
 	sweepLimit         int
+	Registry           *Registry
 }
 
 func NewScheduler(
@@ -50,6 +51,7 @@ func NewScheduler(
 		clock:              clk,
 		pollInterval:       pollInterval,
 		sweepLimit:         sweepLimit,
+		Registry:           NewRegistry(),
 	}
 }
 
@@ -121,17 +123,16 @@ func (s *Scheduler) Tick(ctx context.Context) (TickResult, error) {
 	}
 	result.CheckedOut = checkedOutCount
 
-	payoutsCount, err := s.reservationService.ReleaseDuePayouts(ctx, s.sweepLimit)
-	if err != nil {
-		return result, err
-	}
-	result.PayoutsReleased = payoutsCount
-
 	// Clean up any due Redis timer entries that were already handled or cancelled in Postgres
 	if s.rdb != nil && len(dueMembers) > 0 {
 		for _, member := range dueMembers {
 			_ = s.rdb.RemoveTimer(ctx, member)
 		}
+	}
+
+	// Execute registered background worker jobs (e.g. outbox dispatch, iCal feed sync)
+	if s.Registry != nil {
+		_, _ = s.Registry.RunAll(ctx, now, s.sweepLimit)
 	}
 
 	return result, nil

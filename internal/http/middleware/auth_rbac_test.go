@@ -67,6 +67,15 @@ func (f *fakeListingHostRepo) CreateOwner(_ context.Context, _, _ uuid.UUID, _ [
 func (f *fakeListingHostRepo) UpdateConfig(_ context.Context, _, _ uuid.UUID, _ []byte) (*models.ListingHost, error) {
 	return nil, nil
 }
+func (f *fakeListingHostRepo) CreateCohost(_ context.Context, _ models.ListingHost) (*models.ListingHost, error) {
+	return nil, nil
+}
+func (f *fakeListingHostRepo) UpdateCohost(_ context.Context, _ models.ListingHost) (*models.ListingHost, error) {
+	return nil, nil
+}
+func (f *fakeListingHostRepo) DeleteCohost(_ context.Context, _, _ uuid.UUID) error {
+	return nil
+}
 
 func TestAuthAndListingRBACMiddleware(t *testing.T) {
 	gin.SetMode(gin.TestMode)

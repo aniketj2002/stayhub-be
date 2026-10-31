@@ -185,6 +185,124 @@ func (r *ListingHostRepository) UpdateConfig(ctx context.Context, listingID, use
 	return &lh, nil
 }
 
+func (r *ListingHostRepository) CreateCohost(ctx context.Context, host models.ListingHost) (*models.ListingHost, error) {
+	const q = `
+		INSERT INTO listing_hosts (
+			listing_id, user_id, role,
+			can_manage_listing, can_manage_calendar, can_manage_reservations,
+			can_message_guests, can_view_insights,
+			payout_share_bps, config, invited_by, created_at, updated_at
+		) VALUES (
+			$1, $2, $3,
+			$4, $5, $6,
+			$7, $8,
+			$9, $10, $11, now(), now()
+		)
+		RETURNING id, listing_id, user_id, role,
+		          can_manage_listing, can_manage_calendar, can_manage_reservations,
+		          can_message_guests, can_view_insights,
+		          payout_share_bps, config, invited_by, created_at, updated_at
+	`
+	var lh models.ListingHost
+	var configRaw []byte
+	configBytes := []byte(host.Config)
+	if len(configBytes) == 0 {
+		configBytes = []byte(`{}`)
+	}
+	err := r.db.Conn(ctx).QueryRow(
+		ctx, q,
+		host.ListingID, host.UserID, host.Role,
+		host.CanManageListing, host.CanManageCalendar, host.CanManageReservations,
+		host.CanMessageGuests, host.CanViewInsights,
+		host.PayoutShareBPS, configBytes, host.InvitedBy,
+	).Scan(
+		&lh.ID,
+		&lh.ListingID,
+		&lh.UserID,
+		&lh.Role,
+		&lh.CanManageListing,
+		&lh.CanManageCalendar,
+		&lh.CanManageReservations,
+		&lh.CanMessageGuests,
+		&lh.CanViewInsights,
+		&lh.PayoutShareBPS,
+		&configRaw,
+		&lh.InvitedBy,
+		&lh.CreatedAt,
+		&lh.UpdatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create cohost: %w", err)
+	}
+	lh.Config = json.RawMessage(configRaw)
+	return &lh, nil
+}
+
+func (r *ListingHostRepository) UpdateCohost(ctx context.Context, host models.ListingHost) (*models.ListingHost, error) {
+	const q = `
+		UPDATE listing_hosts
+		SET can_manage_listing = $3,
+		    can_manage_calendar = $4,
+		    can_manage_reservations = $5,
+		    can_message_guests = $6,
+		    can_view_insights = $7,
+		    payout_share_bps = $8,
+		    updated_at = now()
+		WHERE listing_id = $1 AND user_id = $2
+		RETURNING id, listing_id, user_id, role,
+		          can_manage_listing, can_manage_calendar, can_manage_reservations,
+		          can_message_guests, can_view_insights,
+		          payout_share_bps, config, invited_by, created_at, updated_at
+	`
+	var lh models.ListingHost
+	var configRaw []byte
+	err := r.db.Conn(ctx).QueryRow(
+		ctx, q,
+		host.ListingID, host.UserID,
+		host.CanManageListing, host.CanManageCalendar, host.CanManageReservations,
+		host.CanMessageGuests, host.CanViewInsights,
+		host.PayoutShareBPS,
+	).Scan(
+		&lh.ID,
+		&lh.ListingID,
+		&lh.UserID,
+		&lh.Role,
+		&lh.CanManageListing,
+		&lh.CanManageCalendar,
+		&lh.CanManageReservations,
+		&lh.CanMessageGuests,
+		&lh.CanViewInsights,
+		&lh.PayoutShareBPS,
+		&configRaw,
+		&lh.InvitedBy,
+		&lh.CreatedAt,
+		&lh.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, apperrors.ErrNotFound
+		}
+		return nil, fmt.Errorf("update cohost: %w", err)
+	}
+	lh.Config = json.RawMessage(configRaw)
+	return &lh, nil
+}
+
+func (r *ListingHostRepository) DeleteCohost(ctx context.Context, listingID, userID uuid.UUID) error {
+	const q = `
+		DELETE FROM listing_hosts
+		WHERE listing_id = $1 AND user_id = $2 AND role = 'cohost'
+	`
+	cmd, err := r.db.Conn(ctx).Exec(ctx, q, listingID, userID)
+	if err != nil {
+		return fmt.Errorf("delete cohost: %w", err)
+	}
+	if cmd.RowsAffected() == 0 {
+		return apperrors.ErrNotFound
+	}
+	return nil
+}
+
 func scanListingHosts(rows pgx.Rows) ([]models.ListingHost, error) {
 	out := make([]models.ListingHost, 0)
 	for rows.Next() {

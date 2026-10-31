@@ -19,6 +19,7 @@ import (
 )
 
 const localMediaDir = "data/media"
+const localMediaRoute = "/api/v1/media/file"
 
 // Storage provides AWS S3 Signature V4 presigned upload URLs, server-side S3 forwarding,
 // local file persistence, and public read URLs for media.
@@ -54,29 +55,66 @@ func (s *Storage) HasS3Credentials() bool {
 }
 
 // PublicURL returns the public read URL for a given S3 object key.
+// Local development stores bytes on disk and serves them from the API.
+// The MinIO placeholder credentials do not publish a reachable bucket.
 func (s *Storage) PublicURL(s3Key string) string {
 	if strings.HasPrefix(s3Key, "https://") || strings.HasPrefix(s3Key, "http://") {
 		return s3Key
 	}
 	cleanKey := strings.TrimLeft(s3Key, "/")
+	if !s.HasS3Credentials() {
+		return localMediaRoute + "/" + cleanKey
+	}
 	return fmt.Sprintf("%s/%s", s.publicBaseURL, cleanKey)
 }
 
 // ResolveLocalPath safely maps an S3 object key to a local file path inside ./data/media.
+// Reads check both the process working directory and the repository root, because the API
+// is started from either stayhub/ or stayhub/backend/.
 func (s *Storage) ResolveLocalPath(s3Key string) (string, error) {
 	cleanKey := filepath.Clean(strings.TrimLeft(s3Key, "/"))
 	if cleanKey == "." || cleanKey == ".." || strings.HasPrefix(cleanKey, "..") {
 		return "", errors.New("invalid media key path")
 	}
-	baseAbs, err := filepath.Abs(localMediaDir)
+	roots, err := localMediaRoots()
 	if err != nil {
 		return "", err
 	}
-	targetAbs := filepath.Join(baseAbs, cleanKey)
-	if !strings.HasPrefix(targetAbs, baseAbs+string(filepath.Separator)) {
-		return "", errors.New("media path escapes storage root")
+	var fallback string
+	for i, root := range roots {
+		baseAbs, err := filepath.Abs(root)
+		if err != nil {
+			return "", err
+		}
+		targetAbs := filepath.Join(baseAbs, cleanKey)
+		if !strings.HasPrefix(targetAbs, baseAbs+string(filepath.Separator)) {
+			return "", errors.New("media path escapes storage root")
+		}
+		if i == 0 {
+			fallback = targetAbs
+		}
+		if _, statErr := os.Stat(targetAbs); statErr == nil {
+			return targetAbs, nil
+		}
 	}
-	return targetAbs, nil
+	if fallback == "" {
+		return "", errors.New("media storage root is unavailable")
+	}
+	return fallback, nil
+}
+
+func localMediaRoots() ([]string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+	roots := []string{filepath.Join(cwd, localMediaDir)}
+	if filepath.Base(cwd) == "backend" {
+		roots = append(roots, filepath.Join(filepath.Dir(cwd), localMediaDir))
+	} else {
+		roots = append(roots, filepath.Join(cwd, "backend", localMediaDir))
+	}
+	return roots, nil
 }
 
 // SaveObject persists the uploaded bytes locally (for fast serving via /api/v1/media/file/*)

@@ -224,6 +224,28 @@ func (r *memReservationRepo) ListDueCheckOuts(_ context.Context, now time.Time, 
 	return out, nil
 }
 
+func (r *memReservationRepo) ListAdmin(_ context.Context, f dtos.AdminReservationFilter) ([]models.Reservation, int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []models.Reservation
+	for _, v := range r.rows {
+		if f.Status != nil && v.Status != *f.Status {
+			continue
+		}
+		if f.GuestID != nil && v.GuestID != *f.GuestID {
+			continue
+		}
+		if f.HostID != nil && v.HostID != *f.HostID {
+			continue
+		}
+		if f.ListingID != nil && v.ListingID != *f.ListingID {
+			continue
+		}
+		out = append(out, v)
+	}
+	return out, len(out), nil
+}
+
 type memCalendarRepo struct {
 	mu     sync.Mutex
 	nights map[string]models.ListingCalendar
@@ -311,6 +333,55 @@ func (r *memCalendarRepo) ReleaseReservationNights(_ context.Context, reservatio
 	return nil
 }
 
+func (r *memCalendarRepo) SyncICalBlockedNights(_ context.Context, listingID, feedID uuid.UUID, nights []time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for k, v := range r.nights {
+		if v.ICalFeedID != nil && *v.ICalFeedID == feedID {
+			delete(r.nights, k)
+		}
+	}
+	for _, n := range nights {
+		k := calKey(listingID, n)
+		if cur, ok := r.nights[k]; ok && cur.Status == enums.CalendarStatusBooked {
+			continue
+		}
+		fID := feedID
+		reason := "ical_import"
+		r.nights[k] = models.ListingCalendar{
+			ListingID:   listingID,
+			Night:       n,
+			Status:      enums.CalendarStatusBlocked,
+			BlockReason: &reason,
+			ICalFeedID:  &fID,
+		}
+	}
+	return nil
+}
+
+func (r *memCalendarRepo) RemoveICalBlockedNights(_ context.Context, feedID uuid.UUID) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for k, v := range r.nights {
+		if v.ICalFeedID != nil && *v.ICalFeedID == feedID {
+			delete(r.nights, k)
+		}
+	}
+	return nil
+}
+
+func (r *memCalendarRepo) ListAllFutureByListing(_ context.Context, listingID uuid.UUID, from time.Time) ([]models.ListingCalendar, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []models.ListingCalendar
+	for _, n := range r.nights {
+		if n.ListingID == listingID && !n.Night.Before(from) {
+			out = append(out, n)
+		}
+	}
+	return out, nil
+}
+
 type memPaymentRepo struct {
 	mu       sync.Mutex
 	payments []models.Payment
@@ -378,6 +449,10 @@ func (r *memPaymentRepo) FindPayoutByReservation(_ context.Context, reservationI
 		}
 	}
 	return nil, apperrors.ErrNotFound
+}
+
+func (r *memPaymentRepo) FindPayoutByID(ctx context.Context, id uuid.UUID) (*models.Payout, error) {
+	return r.FindPayoutByIDForUpdate(ctx, id)
 }
 
 func (r *memPaymentRepo) FindPayoutByIDForUpdate(_ context.Context, id uuid.UUID) (*models.Payout, error) {
@@ -460,8 +535,16 @@ func (r *memListingRepo) FindByID(_ context.Context, id uuid.UUID) (*models.List
 	}
 	return &l, nil
 }
-func (r *memListingRepo) UpdatePointersAndStatus(_ context.Context, _ uuid.UUID, _ enums.ListingStatus, _, _ *uuid.UUID, _ time.Time) (*models.Listing, error) {
-	return nil, nil
+func (r *memListingRepo) UpdatePointersAndStatus(_ context.Context, id uuid.UUID, status enums.ListingStatus, liveVersionID, workingVersionID *uuid.UUID, _ time.Time) (*models.Listing, error) {
+	l, ok := r.listings[id]
+	if !ok {
+		return nil, apperrors.ErrNotFound
+	}
+	l.Status = status
+	l.LiveVersionID = liveVersionID
+	l.WorkingVersionID = workingVersionID
+	r.listings[id] = l
+	return &l, nil
 }
 func (r *memListingRepo) CreateVersion(_ context.Context, _ models.ListingVersion) (*models.ListingVersion, error) {
 	return nil, nil
@@ -473,8 +556,18 @@ func (r *memListingRepo) FindVersionByID(_ context.Context, id uuid.UUID) (*mode
 	}
 	return &v, nil
 }
-func (r *memListingRepo) UpdateVersion(_ context.Context, _ models.ListingVersion) (*models.ListingVersion, error) {
-	return nil, nil
+func (r *memListingRepo) UpdateVersion(_ context.Context, v models.ListingVersion) (*models.ListingVersion, error) {
+	r.versions[v.ID] = v
+	return &v, nil
+}
+func (r *memListingRepo) ListVersionsByStatus(_ context.Context, status enums.VersionStatus) ([]models.ListingVersion, error) {
+	var out []models.ListingVersion
+	for _, v := range r.versions {
+		if v.Status == status {
+			out = append(out, v)
+		}
+	}
+	return out, nil
 }
 func (r *memListingRepo) ReplaceCheckResults(_ context.Context, _ uuid.UUID, _ []models.ListingCheckResult) ([]models.ListingCheckResult, error) {
 	return nil, nil
@@ -521,6 +614,21 @@ func (r *memListingHostRepo) ListByUser(_ context.Context, userID uuid.UUID) ([]
 func (r *memListingHostRepo) UpdateConfig(_ context.Context, _, _ uuid.UUID, _ []byte) (*models.ListingHost, error) {
 	return nil, nil
 }
+func (r *memListingHostRepo) CreateCohost(_ context.Context, host models.ListingHost) (*models.ListingHost, error) {
+	k := host.ListingID.String() + ":" + host.UserID.String()
+	r.members[k] = host
+	return &host, nil
+}
+func (r *memListingHostRepo) UpdateCohost(_ context.Context, host models.ListingHost) (*models.ListingHost, error) {
+	k := host.ListingID.String() + ":" + host.UserID.String()
+	r.members[k] = host
+	return &host, nil
+}
+func (r *memListingHostRepo) DeleteCohost(_ context.Context, listingID, userID uuid.UUID) error {
+	k := listingID.String() + ":" + userID.String()
+	delete(r.members, k)
+	return nil
+}
 
 type memUserRepo struct {
 	users map[uuid.UUID]models.User
@@ -539,11 +647,29 @@ func (r *memUserRepo) FindByID(_ context.Context, id uuid.UUID) (*models.User, e
 func (r *memUserRepo) FindByEmail(_ context.Context, _ string) (*models.User, error) {
 	return nil, apperrors.ErrNotFound
 }
-func (r *memUserRepo) EnableHostRole(_ context.Context, _ uuid.UUID, _ time.Time) (*models.User, error) {
+func (r *memUserRepo) EnableHostRole(_ context.Context, id uuid.UUID, _ time.Time) (*models.User, error) {
+	if u, ok := r.users[id]; ok {
+		u.IsHost = true
+		r.users[id] = u
+		return &u, nil
+	}
 	return nil, nil
 }
 func (r *memUserRepo) UpdateProfile(_ context.Context, _ uuid.UUID, _ string, _ *uuid.UUID, _ time.Time) (*models.User, error) {
 	return nil, nil
+}
+
+func newMemListingRepo() *memListingRepo {
+	return &memListingRepo{
+		listings: make(map[uuid.UUID]models.Listing),
+		versions: make(map[uuid.UUID]models.ListingVersion),
+	}
+}
+
+func newMemUserRepo() *memUserRepo {
+	return &memUserRepo{
+		users: make(map[uuid.UUID]models.User),
+	}
 }
 
 type memCatalogService struct{}
@@ -875,5 +1001,285 @@ func TestReservationLifecycle_DoubleBooking_StateTransitions_PayoutTiming_EventL
 	// 6. Verify Event Log Completeness
 	if len(auditSvc.events) < 6 {
 		t.Fatalf("expected at least 6 audit events recorded across lifecycle, got %d", len(auditSvc.events))
+	}
+}
+
+func TestReservationService_CheckIn_FailFastOnEventBridgeError(t *testing.T) {
+	hostID := uuid.New()
+	guestID := uuid.New()
+	listingID := uuid.New()
+	versionID := uuid.New()
+
+	strPtr := func(s string) *string { return &s }
+	intPtr := func(i int) *int { return &i }
+	int64Ptr := func(i int64) *int64 { return &i }
+
+	listingRepo := &memListingRepo{
+		listings: map[uuid.UUID]models.Listing{
+			listingID: {ID: listingID, HostID: hostID, Status: enums.ListingStatusLive, LiveVersionID: &versionID},
+		},
+		versions: map[uuid.UUID]models.ListingVersion{
+			versionID: {
+				ID:                 versionID,
+				ListingID:          listingID,
+				Status:             enums.VersionStatusApproved,
+				Title:              strPtr("FailFast Apt"),
+				City:               strPtr("Berlin"),
+				Country:            strPtr("DE"),
+				Timezone:           "Europe/Berlin",
+				MaxGuests:          intPtr(4),
+				BasePriceMinor:     int64Ptr(15000),
+				CleaningFeeMinor:   3000,
+				Currency:           "EUR",
+				InstantBook:        true,
+				CheckInTime:        "15:00",
+				CheckOutTime:       "11:00",
+				CancellationPolicy: strPtr("moderate"),
+			},
+		},
+	}
+
+	lhRepo := &memListingHostRepo{
+		members: map[string]models.ListingHost{
+			listingID.String() + ":" + hostID.String(): {
+				ListingID:             listingID,
+				UserID:                hostID,
+				Role:                  enums.ListingHostRoleOwner,
+				CanManageListing:      true,
+				CanManageCalendar:     true,
+				CanManageReservations: true,
+				CanViewInsights:       true,
+			},
+		},
+	}
+
+	userRepo := &memUserRepo{
+		users: map[uuid.UUID]models.User{
+			hostID:  {ID: hostID, Email: "host@stayhub.dev", FullName: "Host", IsGuest: true, IsHost: true},
+			guestID: {ID: guestID, Email: "guest@stayhub.dev", FullName: "Guest", IsGuest: true},
+		},
+	}
+
+	resRepo := newMemReservationRepo()
+	payRepo := newMemPaymentRepo()
+	calRepo := newMemCalendarRepo()
+	auditSvc := &memAuditService{}
+	mockClk := clock.NewMockClock(time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC))
+
+	cfg := &config.Config{
+		DefaultCurrency:                "EUR",
+		GuestFeeBPS:                    1400,
+		HostFeeBPS:                     300,
+		RequestExpiryHours:             24,
+		PayoutReleaseAfterCheckInHours: 24,
+	}
+
+	stubSched := newTestSchedulerStub()
+	stubSched.fail = true // Simulate AWS EventBridge failure
+
+	svc := NewReservationService(
+		cfg,
+		&db.DB{},
+		nil,
+		resRepo,
+		payRepo,
+		listingRepo,
+		lhRepo,
+		calRepo,
+		userRepo,
+		nil,
+		&memCatalogService{},
+		nil,
+		auditSvc,
+		mockClk,
+		stubSched,
+	)
+
+	checkIn := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
+	checkOut := time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC)
+
+	confirmedRes, err := svc.CreateReservation(
+		context.Background(),
+		models.AuthActor{SubjectID: guestID, SubjectType: "user", IsGuest: true},
+		"idem-ib-failfast",
+		dtos.CreateReservationInput{
+			ListingID: listingID,
+			CheckIn:   checkIn,
+			CheckOut:  checkOut,
+			Guests:    2,
+		},
+	)
+	if err != nil {
+		t.Fatalf("unexpected create error: %v", err)
+	}
+
+	mockClk.Set(checkIn.Add(10 * time.Minute))
+
+	// When EventBridge fails, CheckInByHost MUST fail fast and return an error
+	_, err = svc.CheckInByHost(context.Background(), hostID, confirmedRes.Reservation.ID, "idem-checkin-failfast")
+	if err == nil {
+		t.Fatalf("expected error from CheckInByHost when EventBridge fails, got nil")
+	}
+
+	// Verify fail-fast: reservation remains confirmed in repo, not checked-in
+	r := resRepo.rows[confirmedRes.Reservation.ID]
+	if r.Status != enums.ReservationStatusConfirmed {
+		t.Errorf("expected reservation status to remain %s, got %s", enums.ReservationStatusConfirmed, r.Status)
+	}
+}
+
+type mockReservationMessagingSvc struct {
+	createdReservationID uuid.UUID
+	sentBody             string
+	sentSenderID         uuid.UUID
+}
+
+func (m *mockReservationMessagingSvc) GetOrCreateConversation(_ context.Context, reservationID uuid.UUID) (*dtos.ConversationResponse, error) {
+	m.createdReservationID = reservationID
+	return &dtos.ConversationResponse{
+		ID:            uuid.New(),
+		ReservationID: reservationID,
+	}, nil
+}
+func (m *mockReservationMessagingSvc) ListConversations(_ context.Context, _ uuid.UUID) ([]dtos.ConversationResponse, error) {
+	return nil, nil
+}
+func (m *mockReservationMessagingSvc) GetConversation(_ context.Context, _, _ uuid.UUID) (*dtos.ConversationResponse, error) {
+	return nil, nil
+}
+func (m *mockReservationMessagingSvc) ListMessages(_ context.Context, _, _ uuid.UUID, _ *time.Time, _ int) (*dtos.MessageListResponse, error) {
+	return nil, nil
+}
+func (m *mockReservationMessagingSvc) SendMessage(_ context.Context, senderID, conversationID uuid.UUID, in dtos.SendMessageInput) (*dtos.MessageResponse, error) {
+	m.sentSenderID = senderID
+	m.sentBody = in.Body
+	return &dtos.MessageResponse{ID: uuid.New(), ConversationID: conversationID, SenderID: senderID, Body: in.Body}, nil
+}
+func (m *mockReservationMessagingSvc) MarkRead(_ context.Context, _, _ uuid.UUID) error {
+	return nil
+}
+func (m *mockReservationMessagingSvc) GetConversationParticipantIDs(_ context.Context, _ uuid.UUID) ([]uuid.UUID, error) {
+	return nil, nil
+}
+
+func TestReservationService_CreateReservation_AutoCreatesConversation(t *testing.T) {
+	now := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+	mockClk := clock.NewMockClock(now)
+
+	hostID := uuid.New()
+	guestID := uuid.New()
+	listingID := uuid.New()
+	versionID := uuid.New()
+
+	strPtr := func(s string) *string { return &s }
+	intPtr := func(i int) *int { return &i }
+	int64Ptr := func(i int64) *int64 { return &i }
+
+	listingRepo := &memListingRepo{
+		listings: map[uuid.UUID]models.Listing{
+			listingID: {ID: listingID, HostID: hostID, Status: enums.ListingStatusLive, LiveVersionID: &versionID},
+		},
+		versions: map[uuid.UUID]models.ListingVersion{
+			versionID: {
+				ID:                 versionID,
+				ListingID:          listingID,
+				Status:             enums.VersionStatusApproved,
+				Title:              strPtr("Lisbon Loft"),
+				City:               strPtr("Lisbon"),
+				Country:            strPtr("PT"),
+				Timezone:           "Europe/Lisbon",
+				MaxGuests:          intPtr(4),
+				BasePriceMinor:     int64Ptr(15000),
+				CleaningFeeMinor:   3000,
+				Currency:           "EUR",
+				InstantBook:        true,
+				CheckInTime:        "15:00",
+				CheckOutTime:       "11:00",
+				CancellationPolicy: strPtr("moderate"),
+			},
+		},
+	}
+	lhRepo := &memListingHostRepo{
+		members: map[string]models.ListingHost{
+			listingID.String() + ":" + hostID.String(): {
+				ListingID:             listingID,
+				UserID:                hostID,
+				Role:                  enums.ListingHostRoleOwner,
+				CanManageListing:      true,
+				CanManageCalendar:     true,
+				CanManageReservations: true,
+				CanViewInsights:       true,
+			},
+		},
+	}
+	userRepo := &memUserRepo{
+		users: map[uuid.UUID]models.User{
+			hostID:  {ID: hostID, Email: "host@stayhub.dev", FullName: "Host", IsGuest: true, IsHost: true},
+			guestID: {ID: guestID, Email: "guest@stayhub.dev", FullName: "Guest", IsGuest: true},
+		},
+	}
+	resRepo := newMemReservationRepo()
+	payRepo := newMemPaymentRepo()
+	calRepo := newMemCalendarRepo()
+	auditSvc := &memAuditService{}
+
+	cfg := &config.Config{
+		DefaultCurrency:                "EUR",
+		GuestFeeBPS:                    1400,
+		HostFeeBPS:                     300,
+		RequestExpiryHours:             24,
+		PayoutReleaseAfterCheckInHours: 24,
+	}
+
+	rawSvc := NewReservationService(
+		cfg,
+		&db.DB{},
+		nil,
+		resRepo,
+		payRepo,
+		listingRepo,
+		lhRepo,
+		calRepo,
+		userRepo,
+		nil,
+		&memCatalogService{},
+		nil,
+		auditSvc,
+		mockClk,
+	)
+
+	mockMsg := &mockReservationMessagingSvc{}
+	if rs, ok := rawSvc.(*ReservationService); ok {
+		rs.SetMessagingService(mockMsg)
+	}
+
+	checkIn := now.AddDate(0, 0, 5)
+	checkOut := now.AddDate(0, 0, 8)
+	guestMsg := "Hi host, looking forward to our stay!"
+
+	res, err := rawSvc.CreateReservation(
+		context.Background(),
+		models.AuthActor{SubjectID: guestID, SubjectType: "user", IsGuest: true},
+		"idem-automsg",
+		dtos.CreateReservationInput{
+			ListingID:    listingID,
+			CheckIn:      checkIn,
+			CheckOut:     checkOut,
+			Guests:       2,
+			GuestMessage: &guestMsg,
+		},
+	)
+	if err != nil {
+		t.Fatalf("unexpected create error: %v", err)
+	}
+
+	if mockMsg.createdReservationID != res.Reservation.ID {
+		t.Errorf("expected createdReservationID %s, got %s", res.Reservation.ID, mockMsg.createdReservationID)
+	}
+	if mockMsg.sentSenderID != guestID {
+		t.Errorf("expected sentSenderID %s, got %s", guestID, mockMsg.sentSenderID)
+	}
+	if mockMsg.sentBody != guestMsg {
+		t.Errorf("expected sentBody %q, got %q", guestMsg, mockMsg.sentBody)
 	}
 }

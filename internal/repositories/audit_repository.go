@@ -63,9 +63,15 @@ func (r *AuditRepository) FindMany(ctx context.Context, f dtos.EventListFilter) 
 		argIdx++
 	}
 	if f.ActorType != "" {
-		clauses = append(clauses, fmt.Sprintf("actor_type = $%d", argIdx))
-		args = append(args, f.ActorType)
-		argIdx++
+		if strings.EqualFold(f.ActorType, "user") {
+			clauses = append(clauses, "actor_type IN ('guest', 'host', 'cohost')")
+		} else if strings.EqualFold(f.ActorType, "worker") {
+			clauses = append(clauses, "actor_type = 'system'")
+		} else {
+			clauses = append(clauses, fmt.Sprintf("actor_type::text = $%d", argIdx))
+			args = append(args, strings.ToLower(f.ActorType))
+			argIdx++
+		}
 	}
 	if f.ActorID != nil {
 		clauses = append(clauses, fmt.Sprintf("actor_id = $%d", argIdx))
@@ -75,6 +81,28 @@ func (r *AuditRepository) FindMany(ctx context.Context, f dtos.EventListFilter) 
 	if f.Action != "" {
 		clauses = append(clauses, fmt.Sprintf("action = $%d", argIdx))
 		args = append(args, f.Action)
+		argIdx++
+	}
+	if f.Query != "" {
+		clauses = append(clauses, fmt.Sprintf(`(
+			action ILIKE $%d ESCAPE '\'
+			OR object_type ILIKE $%d ESCAPE '\'
+			OR actor_type::text ILIKE $%d ESCAPE '\'
+			OR COALESCE(reason, '') ILIKE $%d ESCAPE '\'
+			OR object_id::text ILIKE $%d ESCAPE '\'
+			OR COALESCE(actor_id::text, '') ILIKE $%d ESCAPE '\'
+		)`, argIdx, argIdx, argIdx, argIdx, argIdx, argIdx))
+		args = append(args, likePattern(f.Query))
+		argIdx++
+	}
+	if f.From != nil {
+		clauses = append(clauses, fmt.Sprintf("occurred_at >= $%d", argIdx))
+		args = append(args, *f.From)
+		argIdx++
+	}
+	if f.To != nil {
+		clauses = append(clauses, fmt.Sprintf("occurred_at <= $%d", argIdx))
+		args = append(args, *f.To)
 		argIdx++
 	}
 
@@ -128,6 +156,19 @@ func (r *AuditRepository) FindMany(ctx context.Context, f dtos.EventListFilter) 
 		out = append(out, rec)
 	}
 	return out, rows.Err()
+}
+
+func likePattern(q string) string {
+	var b strings.Builder
+	b.WriteByte('%')
+	for _, r := range q {
+		if r == '\\' || r == '%' || r == '_' {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	b.WriteByte('%')
+	return b.String()
 }
 
 func nullableJSON(b []byte) any {
