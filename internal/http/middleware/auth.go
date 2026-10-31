@@ -101,18 +101,34 @@ func RequireAdmin(jwtManager *jwt.Manager) gin.HandlerFunc {
 
 func authenticateRequest(c *gin.Context, jwtManager *jwt.Manager) (models.AuthActor, bool) {
 	rawHeader := strings.TrimSpace(c.GetHeader(AuthorizationHeader))
-	if rawHeader == "" {
+	tokenStr := ""
+	if rawHeader != "" {
+		parts := strings.SplitN(rawHeader, " ", 2)
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || strings.TrimSpace(parts[1]) == "" {
+			response.Unauthorized(c, "Authorization header must be in format 'Bearer <token>'")
+			return models.AuthActor{}, false
+		}
+		tokenStr = strings.TrimSpace(parts[1])
+	} else if token := strings.TrimSpace(c.Query("token")); token != "" {
+		tokenStr = token
+	} else if token := strings.TrimSpace(c.Query("access_token")); token != "" {
+		tokenStr = token
+	} else if proto := strings.TrimSpace(c.GetHeader("Sec-WebSocket-Protocol")); proto != "" {
+		for _, part := range strings.Split(proto, ",") {
+			p := strings.TrimSpace(part)
+			if p != "" && !strings.EqualFold(p, "bearer") && !strings.EqualFold(p, "jwt") {
+				tokenStr = p
+				break
+			}
+		}
+	}
+
+	if tokenStr == "" {
 		response.Unauthorized(c, "Missing Authorization header")
 		return models.AuthActor{}, false
 	}
 
-	parts := strings.SplitN(rawHeader, " ", 2)
-	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || strings.TrimSpace(parts[1]) == "" {
-		response.Unauthorized(c, "Authorization header must be in format 'Bearer <token>'")
-		return models.AuthActor{}, false
-	}
-
-	claims, err := jwtManager.VerifyAccessToken(strings.TrimSpace(parts[1]))
+	claims, err := jwtManager.VerifyAccessToken(tokenStr)
 	if err != nil {
 		if errors.Is(err, jwt.ErrExpiredToken) {
 			response.Fail(c, http.StatusUnauthorized, "TOKEN_EXPIRED", "Access token has expired", nil)

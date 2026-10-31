@@ -47,18 +47,25 @@ type User struct {
 	AvatarMediaID *uuid.UUID `db:"avatar_media_id" json:"avatar_media_id,omitempty"`
 	IsGuest       bool       `db:"is_guest" json:"is_guest"`
 	IsHost        bool       `db:"is_host" json:"is_host"`
+	IsSuperhost   bool       `db:"is_superhost" json:"is_superhost"`
+	Bio           *string    `db:"bio" json:"bio,omitempty"`
+	Languages     []string   `db:"languages" json:"languages,omitempty"`
+	HostingSince  *time.Time `db:"hosting_since" json:"hosting_since,omitempty"`
+	Phone         *string    `db:"phone" json:"phone,omitempty"`
+	Status        string     `db:"status" json:"status"`
 	CreatedAt     time.Time  `db:"created_at" json:"created_at"`
 	UpdatedAt     time.Time  `db:"updated_at" json:"updated_at"`
 }
 
 // AdminUser maps to the `admin_users` table.
 type AdminUser struct {
-	ID           uuid.UUID `db:"id" json:"id"`
-	Email        string    `db:"email" json:"email"`
-	PasswordHash string    `db:"password_hash" json:"-"`
-	FullName     string    `db:"full_name" json:"full_name"`
-	CreatedAt    time.Time `db:"created_at" json:"created_at"`
-	UpdatedAt    time.Time `db:"updated_at" json:"updated_at"`
+	ID           uuid.UUID       `db:"id" json:"id"`
+	Email        string          `db:"email" json:"email"`
+	PasswordHash string          `db:"password_hash" json:"-"`
+	FullName     string          `db:"full_name" json:"full_name"`
+	Role         enums.AdminRole `db:"role" json:"role"`
+	CreatedAt    time.Time       `db:"created_at" json:"created_at"`
+	UpdatedAt    time.Time       `db:"updated_at" json:"updated_at"`
 }
 
 // RefreshToken maps to the `refresh_tokens` table.

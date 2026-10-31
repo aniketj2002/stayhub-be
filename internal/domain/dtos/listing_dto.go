@@ -74,6 +74,8 @@ type HostListingSummaryResponse struct {
 	CoverPhotoURL  *string               `json:"cover_photo_url,omitempty"`
 	HostRole       enums.ListingHostRole `json:"host_role"`
 	HostAccess     models.ListingHost    `json:"host_access"`
+	RatingAvg      float64               `json:"rating_avg"`
+	ReviewCount    int                   `json:"review_count"`
 	CreatedAt      time.Time             `json:"created_at"`
 	UpdatedAt      time.Time             `json:"updated_at"`
 }

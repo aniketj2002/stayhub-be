@@ -141,7 +141,7 @@ func (r *PaymentRepository) ListPaymentsByReservation(ctx context.Context, reser
 const payoutSelectCols = `
 	id, reservation_id, host_id, status,
 	gross_minor, host_fee_minor, net_minor, TRIM(currency),
-	release_at, released_at, held_reason,
+	release_at, released_at, held_reason, held_by,
 	idempotency_key, simulated_ref, created_at, updated_at
 `
 
@@ -159,6 +159,7 @@ func scanPayout(row pgx.Row) (*models.Payout, error) {
 		&p.ReleaseAt,
 		&p.ReleasedAt,
 		&p.HeldReason,
+		&p.HeldBy,
 		&p.IdempotencyKey,
 		&p.SimulatedRef,
 		&p.CreatedAt,
@@ -173,6 +174,12 @@ func scanPayout(row pgx.Row) (*models.Payout, error) {
 	return &p, nil
 }
 
+func (r *PaymentRepository) FindPayoutByID(ctx context.Context, id uuid.UUID) (*models.Payout, error) {
+	q := fmt.Sprintf(`SELECT %s FROM payouts WHERE id = $1`, payoutSelectCols)
+	row := r.db.Conn(ctx).QueryRow(ctx, q, id)
+	return scanPayout(row)
+}
+
 func (r *PaymentRepository) CreatePayout(ctx context.Context, p models.Payout) (*models.Payout, error) {
 	if p.ID == uuid.Nil {
 		p.ID = uuid.New()
@@ -181,13 +188,13 @@ func (r *PaymentRepository) CreatePayout(ctx context.Context, p models.Payout) (
 		INSERT INTO payouts (
 			id, reservation_id, host_id, status,
 			gross_minor, host_fee_minor, net_minor, currency,
-			release_at, released_at, held_reason,
+			release_at, released_at, held_reason, held_by,
 			idempotency_key, simulated_ref
 		) VALUES (
 			$1, $2, $3, $4,
 			$5, $6, $7, $8,
-			$9, $10, $11,
-			$12, $13
+			$9, $10, $11, $12,
+			$13, $14
 		)
 		RETURNING %s
 	`, payoutSelectCols)
@@ -206,6 +213,7 @@ func (r *PaymentRepository) CreatePayout(ctx context.Context, p models.Payout) (
 		p.ReleaseAt,
 		p.ReleasedAt,
 		p.HeldReason,
+		p.HeldBy,
 		p.IdempotencyKey,
 		p.SimulatedRef,
 	)
@@ -247,8 +255,9 @@ func (r *PaymentRepository) UpdatePayout(ctx context.Context, p models.Payout) (
 		    release_at = $6,
 		    released_at = $7,
 		    held_reason = $8,
-		    simulated_ref = $9,
-		    updated_at = $10
+		    held_by = $9,
+		    simulated_ref = $10,
+		    updated_at = $11
 		WHERE id = $1
 		RETURNING %s
 	`, payoutSelectCols)
@@ -264,6 +273,7 @@ func (r *PaymentRepository) UpdatePayout(ctx context.Context, p models.Payout) (
 		p.ReleaseAt,
 		p.ReleasedAt,
 		p.HeldReason,
+		p.HeldBy,
 		p.SimulatedRef,
 		p.UpdatedAt,
 	)

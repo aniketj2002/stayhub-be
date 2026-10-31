@@ -2,6 +2,9 @@ package services
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -13,6 +16,7 @@ import (
 	"github.com/stayhub/backend/internal/domain/interfaces"
 	"github.com/stayhub/backend/internal/domain/models"
 	"github.com/stayhub/backend/internal/platform/clock"
+	"github.com/stayhub/backend/internal/platform/redis"
 	"github.com/stayhub/backend/internal/platform/storage"
 )
 
@@ -25,6 +29,8 @@ type SearchService struct {
 	catalogService interfaces.CatalogService
 	storage        *storage.Storage
 	clock          clock.Clock
+	pricingService interfaces.PricingService
+	rdb            *redis.Client
 }
 
 func NewSearchService(
@@ -36,6 +42,8 @@ func NewSearchService(
 	catalogService interfaces.CatalogService,
 	store *storage.Storage,
 	clk clock.Clock,
+	pricingService interfaces.PricingService,
+	rdb *redis.Client,
 ) interfaces.SearchService {
 	return &SearchService{
 		cfg:            cfg,
@@ -46,10 +54,23 @@ func NewSearchService(
 		catalogService: catalogService,
 		storage:        store,
 		clock:          clk,
+		pricingService: pricingService,
+		rdb:            rdb,
 	}
 }
 
 func (s *SearchService) SearchListings(ctx context.Context, filter dtos.SearchListingsFilter) ([]dtos.SearchListingCard, error) {
+	var cacheKey string
+	if s.rdb != nil {
+		b, _ := json.Marshal(filter)
+		h := sha256.Sum256(b)
+		cacheKey = fmt.Sprintf("search:%x", h)
+		var cached []dtos.SearchListingCard
+		if ok, err := s.rdb.GetJSON(ctx, cacheKey, &cached); err == nil && ok {
+			return cached, nil
+		}
+	}
+
 	rows, err := s.listingRepo.SearchLiveListings(ctx, filter)
 	if err != nil {
 		return nil, err
@@ -105,39 +126,84 @@ func (s *SearchService) SearchListings(ctx context.Context, filter dtos.SearchLi
 			maxGuests = *lv.MaxGuests
 		}
 
+		var rating *float64
+		if r.Listing.ReviewCount > 0 {
+			rate := r.Listing.RatingAvg
+			rating = &rate
+		}
+
 		card := dtos.SearchListingCard{
 			ID:                r.Listing.ID,
 			HostID:            r.Listing.HostID,
 			LiveVersionID:     lv.ID,
 			PropertyType:      derefString(lv.PropertyType),
 			Title:             derefString(lv.Title),
+			Description:       lv.Description,
 			City:              derefString(lv.City),
 			Region:            lv.Region,
 			Country:           derefString(lv.Country),
+			Latitude:          lv.Latitude,
+			Longitude:         lv.Longitude,
+			Lat:               lv.Latitude,
+			Lng:               lv.Longitude,
 			MaxGuests:         maxGuests,
+			Bedrooms:          lv.Bedrooms,
+			Beds:              lv.Beds,
+			Bathrooms:         lv.Bathrooms,
 			InstantBook:       lv.InstantBook,
 			Currency:          lv.Currency,
 			NightlyPriceMinor: basePrice,
 			CleaningFeeMinor:  lv.CleaningFeeMinor,
 			CoverPhotoURL:     coverURL,
 			PhotoURLs:         photoURLs,
-			Rating:            nil, // V1: rating is always null
-			ReviewCount:       0,
+			Rating:            rating,
+			ReviewCount:       r.Listing.ReviewCount,
+			IsGuestFavorite:   r.Listing.IsGuestFavorite,
+			IsSuperhost:       r.HostIsSuperhost,
 		}
 
 		if nightsCount > 0 {
-			q := models.ComputeStayQuote(basePrice, lv.CleaningFeeMinor, nightsCount, s.cfg.GuestFeeBPS, s.cfg.HostFeeBPS)
-			n := q.Nights
-			nt := q.NightlyTotalMinor
-			gf := q.GuestFeeMinor
-			st := q.GuestTotalMinor
-			card.Nights = &n
-			card.NightlyTotalMinor = &nt
-			card.GuestFeeMinor = &gf
-			card.StayTotalMinor = &st
+			var quoted bool
+			if s.pricingService != nil && filter.CheckIn != nil && filter.CheckOut != nil {
+				if breakdown, err := s.pricingService.CalculateQuote(ctx, r.Listing.ID, *filter.CheckIn, *filter.CheckOut); err == nil && len(breakdown.Nights) > 0 {
+					n := len(breakdown.Nights)
+					nt := breakdown.NightlyTotalNetMinor
+					gf := breakdown.GuestFeeMinor
+					st := breakdown.GuestTotalMinor
+					avgNightly := nt / int64(n)
+					card.Nights = &n
+					card.NightlyPriceMinor = avgNightly
+					card.NightlyTotalMinor = &nt
+					card.GuestFeeMinor = &gf
+					card.StayTotalMinor = &st
+					quoted = true
+				}
+			}
+			if !quoted {
+				q := models.ComputeStayQuote(basePrice, lv.CleaningFeeMinor, nightsCount, s.cfg.GuestFeeBPS, s.cfg.HostFeeBPS)
+				n := q.Nights
+				nt := q.NightlyTotalMinor
+				gf := q.GuestFeeMinor
+				st := q.GuestTotalMinor
+				card.Nights = &n
+				card.NightlyTotalMinor = &nt
+				card.GuestFeeMinor = &gf
+				card.StayTotalMinor = &st
+			}
+		}
+
+		if filter.MinPriceMinor != nil && card.NightlyPriceMinor < *filter.MinPriceMinor {
+			continue
+		}
+		if filter.MaxPriceMinor != nil && card.NightlyPriceMinor > *filter.MaxPriceMinor {
+			continue
 		}
 
 		cards = append(cards, card)
+	}
+
+	if s.rdb != nil && cacheKey != "" {
+		_ = s.rdb.SetJSON(ctx, cacheKey, cards, 60*time.Second)
 	}
 
 	return cards, nil
@@ -213,6 +279,8 @@ func (s *SearchService) GetPublicListingDetail(ctx context.Context, listingID uu
 		if hostUser, err := s.userRepo.FindByID(ctx, l.HostID); err == nil {
 			hostProfile.FullName = hostUser.FullName
 			hostProfile.JoinedAt = hostUser.CreatedAt
+			hostProfile.IsSuperhost = hostUser.IsSuperhost
+			hostProfile.Bio = hostUser.Bio
 			if hostUser.AvatarMediaID != nil && s.mediaRepo != nil && s.storage != nil {
 				if m, err := s.mediaRepo.FindByID(ctx, *hostUser.AvatarMediaID); err == nil && m.Status == "uploaded" {
 					url := s.storage.PublicURL(m.S3Key)
@@ -220,6 +288,12 @@ func (s *SearchService) GetPublicListingDetail(ctx context.Context, listingID uu
 				}
 			}
 		}
+	}
+
+	var rating *float64
+	if l.ReviewCount > 0 {
+		rate := l.RatingAvg
+		rating = &rate
 	}
 
 	// Load upcoming 365 days of unavailable calendar dates
@@ -255,12 +329,18 @@ func (s *SearchService) GetPublicListingDetail(ctx context.Context, listingID uu
 		City:               derefString(lv.City),
 		Region:             lv.Region,
 		Country:            derefString(lv.Country),
+		Latitude:           lv.Latitude,
+		Longitude:          lv.Longitude,
 		Timezone:           lv.Timezone,
 		MaxGuests:          maxGuests,
+		Bedrooms:           lv.Bedrooms,
+		Beds:               lv.Beds,
+		Bathrooms:          lv.Bathrooms,
 		BasePriceMinor:     basePrice,
 		CleaningFeeMinor:   lv.CleaningFeeMinor,
 		Currency:           lv.Currency,
 		InstantBook:        lv.InstantBook,
+		IsGuestFavorite:    l.IsGuestFavorite,
 		CheckInTime:        lv.CheckInTime,
 		CheckOutTime:       lv.CheckOutTime,
 		HouseRules:         derefString(lv.HouseRules),
@@ -268,8 +348,8 @@ func (s *SearchService) GetPublicListingDetail(ctx context.Context, listingID uu
 		Amenities:          resolvedAmenities,
 		CancellationPolicy: policy,
 		Host:               hostProfile,
-		Rating:             nil,
-		ReviewCount:        0,
+		Rating:             rating,
+		ReviewCount:        l.ReviewCount,
 		UnavailableDates:   unavailable,
 	}, nil
 }

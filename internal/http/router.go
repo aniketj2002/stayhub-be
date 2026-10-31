@@ -9,6 +9,7 @@ import (
 	"github.com/stayhub/backend/internal/platform/clock"
 	"github.com/stayhub/backend/internal/platform/db"
 	"github.com/stayhub/backend/internal/platform/jwt"
+	"github.com/stayhub/backend/internal/platform/logger"
 	"github.com/stayhub/backend/internal/platform/redis"
 )
 
@@ -28,6 +29,24 @@ type ServerDeps struct {
 	CalendarService       interfaces.CalendarService
 	SearchService         interfaces.SearchService
 	ReservationService    interfaces.ReservationService
+
+	AdminRepository           interfaces.AdminRepository
+	AdminReservationService   interfaces.AdminReservationService
+	AdminListingReviewService interfaces.AdminListingReviewService
+	AdminService              interfaces.AdminService
+	FeeConfigService          interfaces.FeeConfigService
+	PayoutService             interfaces.PayoutService
+	LedgerService             interfaces.LedgerService
+
+	PricingService interfaces.PricingService
+	ICalService    interfaces.ICalService
+	CohostService  interfaces.CohostService
+
+	MessagingService             interfaces.MessagingService
+	ReviewService                interfaces.ReviewService
+	ItineraryService             interfaces.ItineraryService
+	ReservationAlterationService interfaces.ReservationAlterationService
+	WishlistService              interfaces.WishlistService
 }
 
 func NewRouter(deps ServerDeps) *gin.Engine {
@@ -36,9 +55,10 @@ func NewRouter(deps ServerDeps) *gin.Engine {
 	}
 
 	r := gin.New()
-	r.Use(gin.Logger())
-	r.Use(gin.Recovery())
+	jsonLogger := logger.NewJSONLogger(deps.Config.AppEnv)
 	r.Use(middleware.RequestID())
+	r.Use(logger.RequestLogger(jsonLogger))
+	r.Use(gin.Recovery())
 	r.Use(middleware.CORS(deps.Config.CORSAllowedOrigins))
 
 	r.NoRoute(func(c *gin.Context) {

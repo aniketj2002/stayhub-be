@@ -38,6 +38,9 @@ type EventListFilter struct {
 	ActorType  string
 	ActorID    *uuid.UUID
 	Action     string
+	Query      string
+	From       *time.Time
+	To         *time.Time
 	Limit      int
 	Offset     int
 }

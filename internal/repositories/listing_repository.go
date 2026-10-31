@@ -49,7 +49,12 @@ func (r *ListingRepository) CreateListing(ctx context.Context, hostID uuid.UUID)
 
 func (r *ListingRepository) FindByID(ctx context.Context, id uuid.UUID) (*models.Listing, error) {
 	const q = `
-		SELECT id, host_id, status, live_version_id, working_version_id, created_at, updated_at
+		SELECT id, host_id, status, live_version_id, working_version_id,
+		       COALESCE(rating_avg, 0), COALESCE(review_count, 0),
+		       rating_cleanliness, rating_accuracy, rating_checkin,
+		       rating_communication, rating_location, rating_value,
+		       COALESCE(is_guest_favorite, false),
+		       created_at, updated_at
 		FROM listings
 		WHERE id = $1
 	`
@@ -60,6 +65,15 @@ func (r *ListingRepository) FindByID(ctx context.Context, id uuid.UUID) (*models
 		&l.Status,
 		&l.LiveVersionID,
 		&l.WorkingVersionID,
+		&l.RatingAvg,
+		&l.ReviewCount,
+		&l.RatingCleanliness,
+		&l.RatingAccuracy,
+		&l.RatingCheckin,
+		&l.RatingCommunication,
+		&l.RatingLocation,
+		&l.RatingValue,
+		&l.IsGuestFavorite,
 		&l.CreatedAt,
 		&l.UpdatedAt,
 	)
@@ -111,10 +125,12 @@ const listingVersionSelectCols = `
 	id, listing_id, version_no, status, wizard_step,
 	property_type, title, description,
 	address_line1, address_line2, city, region, TRIM(country), postal_code,
-	timezone, max_guests, base_price_minor, cleaning_fee_minor, TRIM(currency),
+	latitude, longitude,
+	timezone, max_guests, bedrooms, beds, bathrooms,
+	base_price_minor, cleaning_fee_minor, TRIM(currency),
 	instant_book, to_char(check_in_time, 'HH24:MI'), to_char(check_out_time, 'HH24:MI'),
 	house_rules, cancellation_policy, amenities, media_ids,
-	submitted_at, decided_at, created_at, updated_at
+	submitted_at, decided_at, decided_by, decision_note, created_at, updated_at
 `
 
 func scanListingVersion(row pgx.Row) (*models.ListingVersion, error) {
@@ -134,8 +150,13 @@ func scanListingVersion(row pgx.Row) (*models.ListingVersion, error) {
 		&v.Region,
 		&v.Country,
 		&v.PostalCode,
+		&v.Latitude,
+		&v.Longitude,
 		&v.Timezone,
 		&v.MaxGuests,
+		&v.Bedrooms,
+		&v.Beds,
+		&v.Bathrooms,
 		&v.BasePriceMinor,
 		&v.CleaningFeeMinor,
 		&v.Currency,
@@ -148,6 +169,8 @@ func scanListingVersion(row pgx.Row) (*models.ListingVersion, error) {
 		&v.MediaIDs,
 		&v.SubmittedAt,
 		&v.DecidedAt,
+		&v.DecidedBy,
+		&v.DecisionNote,
 		&v.CreatedAt,
 		&v.UpdatedAt,
 	)
@@ -194,7 +217,9 @@ func (r *ListingRepository) CreateVersion(ctx context.Context, v models.ListingV
 			listing_id, version_no, status, wizard_step,
 			property_type, title, description,
 			address_line1, address_line2, city, region, country, postal_code,
-			timezone, max_guests, base_price_minor, cleaning_fee_minor, currency,
+			latitude, longitude,
+			timezone, max_guests, bedrooms, beds, bathrooms,
+			base_price_minor, cleaning_fee_minor, currency,
 			instant_book, check_in_time, check_out_time,
 			house_rules, cancellation_policy, amenities, media_ids,
 			submitted_at, decided_at
@@ -202,10 +227,12 @@ func (r *ListingRepository) CreateVersion(ctx context.Context, v models.ListingV
 			$1, $2, $3, $4,
 			$5, $6, $7,
 			$8, $9, $10, $11, $12, $13,
-			$14, $15, $16, $17, $18,
-			$19, $20::time, $21::time,
-			$22, $23, $24, $25,
-			$26, $27
+			$14, $15,
+			$16, $17, $18, $19, $20,
+			$21, $22, $23,
+			$24, $25::time, $26::time,
+			$27, $28, $29, $30,
+			$31, $32
 		)
 		RETURNING %s
 	`, listingVersionSelectCols)
@@ -226,8 +253,13 @@ func (r *ListingRepository) CreateVersion(ctx context.Context, v models.ListingV
 		v.Region,
 		v.Country,
 		v.PostalCode,
+		v.Latitude,
+		v.Longitude,
 		v.Timezone,
 		v.MaxGuests,
+		v.Bedrooms,
+		v.Beds,
+		v.Bathrooms,
 		v.BasePriceMinor,
 		v.CleaningFeeMinor,
 		v.Currency,
@@ -285,21 +317,28 @@ func (r *ListingRepository) UpdateVersion(ctx context.Context, v models.ListingV
 		    region = $10,
 		    country = $11,
 		    postal_code = $12,
-		    timezone = $13,
-		    max_guests = $14,
-		    base_price_minor = $15,
-		    cleaning_fee_minor = $16,
-		    currency = $17,
-		    instant_book = $18,
-		    check_in_time = $19::time,
-		    check_out_time = $20::time,
-		    house_rules = $21,
-		    cancellation_policy = $22,
-		    amenities = $23,
-		    media_ids = $24,
-		    submitted_at = $25,
-		    decided_at = $26,
-		    updated_at = $27
+		    latitude = $13,
+		    longitude = $14,
+		    timezone = $15,
+		    max_guests = $16,
+		    bedrooms = $17,
+		    beds = $18,
+		    bathrooms = $19,
+		    base_price_minor = $20,
+		    cleaning_fee_minor = $21,
+		    currency = $22,
+		    instant_book = $23,
+		    check_in_time = $24::time,
+		    check_out_time = $25::time,
+		    house_rules = $26,
+		    cancellation_policy = $27,
+		    amenities = $28,
+		    media_ids = $29,
+		    submitted_at = $30,
+		    decided_at = $31,
+		    decided_by = $32,
+		    decision_note = $33,
+		    updated_at = $34
 		WHERE id = $1
 		RETURNING %s
 	`, listingVersionSelectCols)
@@ -319,8 +358,13 @@ func (r *ListingRepository) UpdateVersion(ctx context.Context, v models.ListingV
 		v.Region,
 		v.Country,
 		v.PostalCode,
+		v.Latitude,
+		v.Longitude,
 		v.Timezone,
 		v.MaxGuests,
+		v.Bedrooms,
+		v.Beds,
+		v.Bathrooms,
 		v.BasePriceMinor,
 		v.CleaningFeeMinor,
 		v.Currency,
@@ -333,6 +377,8 @@ func (r *ListingRepository) UpdateVersion(ctx context.Context, v models.ListingV
 		v.MediaIDs,
 		v.SubmittedAt,
 		v.DecidedAt,
+		v.DecidedBy,
+		v.DecisionNote,
 		v.UpdatedAt,
 	)
 
@@ -341,6 +387,30 @@ func (r *ListingRepository) UpdateVersion(ctx context.Context, v models.ListingV
 		return nil, fmt.Errorf("update listing_version: %w", err)
 	}
 	return updated, nil
+}
+
+func (r *ListingRepository) ListVersionsByStatus(ctx context.Context, status enums.VersionStatus) ([]models.ListingVersion, error) {
+	q := fmt.Sprintf(`
+		SELECT %s
+		FROM listing_versions
+		WHERE status = $1
+		ORDER BY submitted_at ASC NULLS LAST, created_at ASC
+	`, listingVersionSelectCols)
+	rows, err := r.db.Conn(ctx).Query(ctx, q, string(status))
+	if err != nil {
+		return nil, fmt.Errorf("list versions by status: %w", err)
+	}
+	defer rows.Close()
+
+	var out []models.ListingVersion
+	for rows.Next() {
+		v, err := scanListingVersion(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan version: %w", err)
+		}
+		out = append(out, *v)
+	}
+	return out, rows.Err()
 }
 
 func (r *ListingRepository) ReplaceCheckResults(
@@ -442,6 +512,51 @@ func (r *ListingRepository) SearchLiveListings(ctx context.Context, filter dtos.
 		args = append(args, propType)
 		argIdx++
 	}
+	if len(filter.PropertyTypes) > 0 {
+		lowerTypes := make([]string, len(filter.PropertyTypes))
+		for i, pt := range filter.PropertyTypes {
+			lowerTypes[i] = strings.ToLower(strings.TrimSpace(pt))
+		}
+		clauses = append(clauses, fmt.Sprintf("LOWER(lv.property_type) = ANY($%d)", argIdx))
+		args = append(args, lowerTypes)
+		argIdx++
+	}
+	if filter.Bedrooms != nil {
+		clauses = append(clauses, fmt.Sprintf("COALESCE(lv.bedrooms, 1) >= $%d", argIdx))
+		args = append(args, *filter.Bedrooms)
+		argIdx++
+	}
+	if filter.Beds != nil {
+		clauses = append(clauses, fmt.Sprintf("COALESCE(lv.beds, 1) >= $%d", argIdx))
+		args = append(args, *filter.Beds)
+		argIdx++
+	}
+	if filter.Bathrooms != nil {
+		clauses = append(clauses, fmt.Sprintf("COALESCE(lv.bathrooms, 1.0) >= $%d", argIdx))
+		args = append(args, *filter.Bathrooms)
+		argIdx++
+	}
+	if filter.GuestFavorite != nil && *filter.GuestFavorite {
+		clauses = append(clauses, "l.is_guest_favorite = true")
+	}
+	if filter.Superhost != nil && *filter.Superhost {
+		clauses = append(clauses, "u.is_superhost = true")
+	}
+	if filter.NeLat != nil && filter.NeLng != nil && filter.SwLat != nil && filter.SwLng != nil {
+		minLat := *filter.SwLat
+		maxLat := *filter.NeLat
+		if minLat > maxLat {
+			minLat, maxLat = maxLat, minLat
+		}
+		minLng := *filter.SwLng
+		maxLng := *filter.NeLng
+		if minLng > maxLng {
+			minLng, maxLng = maxLng, minLng
+		}
+		clauses = append(clauses, fmt.Sprintf("lv.latitude >= $%d AND lv.latitude <= $%d AND lv.longitude >= $%d AND lv.longitude <= $%d", argIdx, argIdx+1, argIdx+2, argIdx+3))
+		args = append(args, minLat, maxLat, minLng, maxLng)
+		argIdx += 4
+	}
 	if filter.InstantBook != nil {
 		clauses = append(clauses, fmt.Sprintf("lv.instant_book = $%d", argIdx))
 		args = append(args, *filter.InstantBook)
@@ -487,16 +602,22 @@ func (r *ListingRepository) SearchLiveListings(ctx context.Context, filter dtos.
 
 	q := fmt.Sprintf(`
 		SELECT
-			l.id, l.host_id, l.status, l.live_version_id, l.working_version_id, l.created_at, l.updated_at,
+			l.id, l.host_id, l.status, l.live_version_id, l.working_version_id,
+			COALESCE(l.rating_avg, 0), COALESCE(l.review_count, 0), COALESCE(l.is_guest_favorite, false),
+			l.created_at, l.updated_at,
 			lv.id, lv.listing_id, lv.version_no, lv.status, lv.wizard_step,
 			lv.property_type, lv.title, lv.description,
 			lv.address_line1, lv.address_line2, lv.city, lv.region, TRIM(lv.country), lv.postal_code,
-			lv.timezone, lv.max_guests, lv.base_price_minor, lv.cleaning_fee_minor, TRIM(lv.currency),
+			lv.latitude, lv.longitude,
+			lv.timezone, lv.max_guests, lv.bedrooms, lv.beds, lv.bathrooms,
+			lv.base_price_minor, lv.cleaning_fee_minor, TRIM(lv.currency),
 			lv.instant_book, to_char(lv.check_in_time, 'HH24:MI'), to_char(lv.check_out_time, 'HH24:MI'),
 			lv.house_rules, lv.cancellation_policy, lv.amenities, lv.media_ids,
-			lv.submitted_at, lv.decided_at, lv.created_at, lv.updated_at
+			lv.submitted_at, lv.decided_at, lv.created_at, lv.updated_at,
+			COALESCE(u.is_superhost, false)
 		FROM listings l
 		JOIN listing_versions lv ON lv.id = l.live_version_id
+		LEFT JOIN users u ON u.id = l.host_id
 		WHERE %s
 		ORDER BY l.created_at DESC, l.id ASC
 		LIMIT $%d OFFSET $%d
@@ -519,6 +640,9 @@ func (r *ListingRepository) SearchLiveListings(ctx context.Context, filter dtos.
 			&row.Listing.Status,
 			&row.Listing.LiveVersionID,
 			&row.Listing.WorkingVersionID,
+			&row.Listing.RatingAvg,
+			&row.Listing.ReviewCount,
+			&row.Listing.IsGuestFavorite,
 			&row.Listing.CreatedAt,
 			&row.Listing.UpdatedAt,
 			&row.LiveVersion.ID,
@@ -535,8 +659,13 @@ func (r *ListingRepository) SearchLiveListings(ctx context.Context, filter dtos.
 			&row.LiveVersion.Region,
 			&row.LiveVersion.Country,
 			&row.LiveVersion.PostalCode,
+			&row.LiveVersion.Latitude,
+			&row.LiveVersion.Longitude,
 			&row.LiveVersion.Timezone,
 			&row.LiveVersion.MaxGuests,
+			&row.LiveVersion.Bedrooms,
+			&row.LiveVersion.Beds,
+			&row.LiveVersion.Bathrooms,
 			&row.LiveVersion.BasePriceMinor,
 			&row.LiveVersion.CleaningFeeMinor,
 			&row.LiveVersion.Currency,
@@ -551,6 +680,7 @@ func (r *ListingRepository) SearchLiveListings(ctx context.Context, filter dtos.
 			&row.LiveVersion.DecidedAt,
 			&row.LiveVersion.CreatedAt,
 			&row.LiveVersion.UpdatedAt,
+			&row.HostIsSuperhost,
 		); err != nil {
 			return nil, fmt.Errorf("scan search listing row: %w", err)
 		}

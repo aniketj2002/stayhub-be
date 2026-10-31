@@ -60,8 +60,14 @@ func main() {
 		log.Fatalf("hash seed password: %v", err)
 	}
 
+	stayhubHash, err := bcrypt.GenerateFromPassword([]byte("stayhub"), bcrypt.DefaultCost)
+	if err != nil {
+		log.Fatalf("hash stayhub admin password: %v", err)
+	}
+
 	// Deterministic UUIDs so `make seed` is idempotent across runs
 	adminID := uuid.MustParse("00000000-0000-4000-8000-000000000001")
+	adminComID := uuid.MustParse("00000000-0000-4000-8000-000000000099")
 	hostInesID := uuid.MustParse("10000000-0000-4000-8000-000000000001")
 	hostKenjiID := uuid.MustParse("10000000-0000-4000-8000-000000000002")
 	guestClaireID := uuid.MustParse("20000000-0000-4000-8000-000000000001")
@@ -72,17 +78,31 @@ func main() {
 	err = database.WithinTx(ctx, func(txCtx context.Context) error {
 		conn := database.Conn(txCtx)
 
-		// 1. Seed Admin User
-		_, err := conn.Exec(txCtx, `
-			INSERT INTO admin_users (id, email, password_hash, full_name)
-			VALUES ($1, $2, $3, $4)
-			ON CONFLICT (email) DO UPDATE
-			SET password_hash = EXCLUDED.password_hash,
-			    full_name = EXCLUDED.full_name,
-			    updated_at = now()
-		`, adminID, "admin@stayhub.dev", string(pwdHash), "StayHub Platform Admin")
-		if err != nil {
-			return fmt.Errorf("seed admin_users: %w", err)
+		// 1. Seed Admin Users
+		adminSeeds := []struct {
+			id       uuid.UUID
+			email    string
+			hash     string
+			fullName string
+			role     string
+		}{
+			{adminComID, "admin@stayhub.com", string(stayhubHash), "StayHub Super Admin", "super_admin"},
+			{adminID, "admin@stayhub.dev", string(pwdHash), "StayHub Platform Admin", "super_admin"},
+		}
+
+		for _, a := range adminSeeds {
+			_, err := conn.Exec(txCtx, `
+				INSERT INTO admin_users (id, email, password_hash, full_name, role)
+				VALUES ($1, $2, $3, $4, $5)
+				ON CONFLICT (email) DO UPDATE
+				SET password_hash = EXCLUDED.password_hash,
+				    full_name = EXCLUDED.full_name,
+				    role = EXCLUDED.role,
+				    updated_at = now()
+			`, a.id, a.email, a.hash, a.fullName, a.role)
+			if err != nil {
+				return fmt.Errorf("seed admin_users (%s): %w", a.email, err)
+			}
 		}
 
 		// 2. Seed Users (Hosts & Guests)
@@ -713,6 +733,130 @@ func main() {
 			if err != nil {
 				return fmt.Errorf("seed event_log C: %w", err)
 			}
+		}
+
+		// 6. Seed Conversations & Messages for Reservations
+		type seedMsg struct {
+			id        uuid.UUID
+			senderID  uuid.UUID
+			body      string
+			createdAt time.Time
+		}
+		type seedConv struct {
+			id            uuid.UUID
+			reservationID uuid.UUID
+			listingID     uuid.UUID
+			guestID       uuid.UUID
+			hostID        uuid.UUID
+			createdAt     time.Time
+			messages      []seedMsg
+		}
+
+		convSeeds := []seedConv{
+			{
+				id:            uuid.MustParse("90000000-0000-4000-8000-000000000001"),
+				reservationID: resConfirmedID,
+				listingID:     listingSpecs[0].ListingID,
+				guestID:       guestArjunID,
+				hostID:        hostInesID,
+				createdAt:     now.Add(-5 * time.Hour),
+				messages: []seedMsg{
+					{
+						id:        uuid.MustParse("91000000-0000-4000-8000-000000000001"),
+						senderID:  guestArjunID,
+						body:      "Looking forward to exploring Alfama! What is the best way to get from Lisbon airport to the loft?",
+						createdAt: now.Add(-5 * time.Hour),
+					},
+					{
+						id:        uuid.MustParse("91000000-0000-4000-8000-000000000002"),
+						senderID:  hostInesID,
+						body:      "Hi Arjun! The easiest route is the metro (red line, change to blue at São Sebastião down to Santa Apolónia) or a quick 20-minute taxi ride. Safe travels!",
+						createdAt: now.Add(-4 * time.Hour),
+					},
+				},
+			},
+			{
+				id:            uuid.MustParse("90000000-0000-4000-8000-000000000002"),
+				reservationID: resPendingID,
+				listingID:     listingSpecs[1].ListingID,
+				guestID:       guestClaireID,
+				hostID:        hostInesID,
+				createdAt:     now.Add(-2 * time.Hour),
+				messages: []seedMsg{
+					{
+						id:        uuid.MustParse("91000000-0000-4000-8000-000000000003"),
+						senderID:  guestClaireID,
+						body:      "Hi Inês! Celebrating our anniversary in Lisbon and would love to stay at your townhouse.",
+						createdAt: now.Add(-2 * time.Hour),
+					},
+					{
+						id:        uuid.MustParse("91000000-0000-4000-8000-000000000004"),
+						senderID:  hostInesID,
+						body:      "Hi Claire! Congratulations on your anniversary! The townhouse is perfect for a celebration. Let me know if you need any romantic restaurant recommendations in Príncipe Real.",
+						createdAt: now.Add(-1 * time.Hour),
+					},
+				},
+			},
+			{
+				id:            uuid.MustParse("90000000-0000-4000-8000-000000000003"),
+				reservationID: resCompletedID,
+				listingID:     listingSpecs[4].ListingID,
+				guestID:       guestClaireID,
+				hostID:        hostKenjiID,
+				createdAt:     now.Add(-10 * 24 * time.Hour),
+				messages: []seedMsg{
+					{
+						id:        uuid.MustParse("91000000-0000-4000-8000-000000000005"),
+						senderID:  guestClaireID,
+						body:      "Excited to experience a traditional Kyoto machiya.",
+						createdAt: now.Add(-10 * 24 * time.Hour),
+					},
+					{
+						id:        uuid.MustParse("91000000-0000-4000-8000-000000000006"),
+						senderID:  hostKenjiID,
+						body:      "Welcome Claire! The machiya is fully prepared, and fresh cedar tea awaits you upon check-in. Let me know if you need help with temple guides.",
+						createdAt: now.Add(-10*24*time.Hour + 30*time.Minute),
+					},
+				},
+			},
+		}
+
+		for _, cs := range convSeeds {
+			_, err := conn.Exec(txCtx, `
+				INSERT INTO conversations (id, reservation_id, listing_id, guest_id, created_at, updated_at)
+				VALUES ($1, $2, $3, $4, $5, $6)
+				ON CONFLICT (reservation_id) DO UPDATE
+				SET updated_at = EXCLUDED.updated_at
+			`, cs.id, cs.reservationID, cs.listingID, cs.guestID, cs.createdAt, now)
+			if err != nil {
+				return fmt.Errorf("seed conversation (%s): %w", cs.reservationID, err)
+			}
+
+			for _, m := range cs.messages {
+				_, err := conn.Exec(txCtx, `
+					INSERT INTO messages (id, conversation_id, sender_id, body, media_ids, flags, created_at)
+					VALUES ($1, $2, $3, $4, ARRAY[]::uuid[], ARRAY[]::text[], $5)
+					ON CONFLICT (id) DO NOTHING
+				`, m.id, cs.id, m.senderID, m.body, m.createdAt)
+				if err != nil {
+					return fmt.Errorf("seed message (%s): %w", m.id, err)
+				}
+			}
+
+			// Seed conversation read receipts
+			_, _ = conn.Exec(txCtx, `
+				INSERT INTO conversation_reads (conversation_id, user_id, last_read_at)
+				VALUES ($1, $2, $3)
+				ON CONFLICT (conversation_id, user_id) DO UPDATE
+				SET last_read_at = EXCLUDED.last_read_at
+			`, cs.id, cs.guestID, now)
+
+			_, _ = conn.Exec(txCtx, `
+				INSERT INTO conversation_reads (conversation_id, user_id, last_read_at)
+				VALUES ($1, $2, $3)
+				ON CONFLICT (conversation_id, user_id) DO UPDATE
+				SET last_read_at = EXCLUDED.last_read_at
+			`, cs.id, cs.hostID, now)
 		}
 
 		return nil

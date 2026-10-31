@@ -16,8 +16,10 @@ import (
 	"github.com/stayhub/backend/internal/domain/enums"
 	"github.com/stayhub/backend/internal/domain/interfaces"
 	"github.com/stayhub/backend/internal/domain/models"
+	"github.com/stayhub/backend/internal/domain/pricing"
 	"github.com/stayhub/backend/internal/domain/statemachine"
 	"github.com/stayhub/backend/internal/http/middleware"
+	platformaws "github.com/stayhub/backend/internal/platform/aws"
 	"github.com/stayhub/backend/internal/platform/clock"
 	"github.com/stayhub/backend/internal/platform/db"
 	"github.com/stayhub/backend/internal/platform/redis"
@@ -39,6 +41,12 @@ type ReservationService struct {
 	storage         *storage.Storage
 	audit           interfaces.AuditService
 	clock           clock.Clock
+	ledger          interfaces.LedgerService
+	payoutSvc       interfaces.PayoutService
+	feeConfigSvc    interfaces.FeeConfigService
+	payoutScheduler platformaws.PayoutScheduler
+	pricingRepo     interfaces.PricingRepository
+	messagingSvc    interfaces.MessagingService
 }
 
 func NewReservationService(
@@ -56,7 +64,14 @@ func NewReservationService(
 	store *storage.Storage,
 	audit interfaces.AuditService,
 	clk clock.Clock,
+	payoutScheduler ...platformaws.PayoutScheduler,
 ) interfaces.ReservationService {
+	var ps platformaws.PayoutScheduler
+	if len(payoutScheduler) > 0 {
+		ps = payoutScheduler[0]
+	}
+	ledger := NewLedgerService(paymentRepo, audit)
+	payoutSvc := NewPayoutService(cfg, database, rdb, paymentRepo, resRepo, ledger, audit, clk, ps)
 	return &ReservationService{
 		cfg:             cfg,
 		db:              database,
@@ -72,7 +87,26 @@ func NewReservationService(
 		storage:         store,
 		audit:           audit,
 		clock:           clk,
+		ledger:          ledger,
+		payoutSvc:       payoutSvc,
+		payoutScheduler: ps,
 	}
+}
+
+func (s *ReservationService) SetPricingRepo(repo interfaces.PricingRepository) {
+	s.pricingRepo = repo
+}
+
+func (s *ReservationService) SetPayoutScheduler(ps platformaws.PayoutScheduler) {
+	s.payoutScheduler = ps
+}
+
+func (s *ReservationService) SetFeeConfigService(fcs interfaces.FeeConfigService) {
+	s.feeConfigSvc = fcs
+}
+
+func (s *ReservationService) SetMessagingService(svc interfaces.MessagingService) {
+	s.messagingSvc = svc
 }
 
 // BuildChargeLedgerEntries constructs a balanced 4-leg double-entry ledger transaction for a guest payment charge.
@@ -265,7 +299,61 @@ func (s *ReservationService) CreateReservation(
 	if lv.BasePriceMinor != nil {
 		basePrice = *lv.BasePriceMinor
 	}
-	quote := models.ComputeStayQuote(basePrice, lv.CleaningFeeMinor, len(nights), s.cfg.GuestFeeBPS, s.cfg.HostFeeBPS)
+
+	guestFeeBPS := s.cfg.GuestFeeBPS
+	hostFeeBPS := s.cfg.HostFeeBPS
+	var feeConfigID *uuid.UUID
+	if s.feeConfigSvc != nil {
+		if activeFC, err := s.feeConfigSvc.GetActive(ctx); err == nil && activeFC != nil {
+			guestFeeBPS = activeFC.GuestFeeBPS
+			hostFeeBPS = activeFC.HostFeeBPS
+			if activeFC.ID != uuid.Nil {
+				feeConfigID = &activeFC.ID
+			}
+		}
+	}
+
+	listingPricing := pricing.ListingPricing{
+		BasePriceMinor:   basePrice,
+		CleaningFeeMinor: lv.CleaningFeeMinor,
+		Currency:         lv.Currency,
+		MinNights:        1,
+		WeekendDays:      []int{5, 6},
+	}
+	var dateOverrides []pricing.DateOverride
+
+	if s.pricingRepo != nil {
+		if rule, err := s.pricingRepo.GetPricingRule(ctx, l.ID); err == nil && rule != nil {
+			listingPricing.WeekendPriceMinor = rule.WeekendPriceMinor
+			listingPricing.WeekendDays = rule.WeekendDays
+			listingPricing.MinNights = rule.MinNights
+			listingPricing.WeeklyDiscountBPS = rule.WeeklyDiscountBPS
+			listingPricing.MonthlyDiscountBPS = rule.MonthlyDiscountBPS
+		}
+		if ovrs, err := s.pricingRepo.GetDateOverrides(ctx, l.ID, in.CheckIn, in.CheckOut); err == nil {
+			for _, o := range ovrs {
+				dateOverrides = append(dateOverrides, pricing.DateOverride{
+					Night:      o.Night,
+					PriceMinor: o.PriceMinor,
+					MinNights:  o.MinNights,
+				})
+			}
+		}
+	}
+
+	pBreakdown, err := pricing.Quote(
+		listingPricing,
+		dateOverrides,
+		in.CheckIn,
+		in.CheckOut,
+		pricing.FeeConfig{
+			GuestFeeBPS: guestFeeBPS,
+			HostFeeBPS:  hostFeeBPS,
+		},
+	)
+	if err != nil {
+		return nil, apperrors.ErrValidation
+	}
 
 	checkInAt, err := models.CombineLocalDateAndTime(in.CheckIn, lv.CheckInTime, lv.Timezone)
 	if err != nil {
@@ -331,15 +419,17 @@ func (s *ReservationService) CreateReservation(
 			Guests:             in.Guests,
 			GuestMessage:       in.GuestMessage,
 			Currency:           lv.Currency,
-			NightlyTotalMinor:  quote.NightlyTotalMinor,
-			CleaningFeeMinor:   quote.CleaningFeeMinor,
-			GuestFeeBPS:        quote.GuestFeeBPS,
-			GuestFeeMinor:      quote.GuestFeeMinor,
-			GuestTotalMinor:    quote.GuestTotalMinor,
-			HostFeeBPS:         quote.HostFeeBPS,
-			HostFeeMinor:       quote.HostFeeMinor,
-			HostNetMinor:       quote.HostNetMinor,
+			NightlyTotalMinor:  pBreakdown.NightlyTotalNetMinor,
+			DiscountMinor:      pBreakdown.DiscountMinor,
+			CleaningFeeMinor:   pBreakdown.CleaningFeeMinor,
+			GuestFeeBPS:        pBreakdown.GuestFeeBPS,
+			GuestFeeMinor:      pBreakdown.GuestFeeMinor,
+			GuestTotalMinor:    pBreakdown.GuestTotalMinor,
+			HostFeeBPS:         pBreakdown.HostFeeBPS,
+			HostFeeMinor:       pBreakdown.HostFeeMinor,
+			HostNetMinor:       pBreakdown.HostNetMinor,
 			CancellationPolicy: policyCode,
+			FeeConfigID:        feeConfigID,
 			RequestExpiresAt:   requestExpiresAt,
 			DecidedAt:          decidedAt,
 		})
@@ -347,6 +437,20 @@ func (s *ReservationService) CreateReservation(
 			return err
 		}
 		createdRes = resRow
+
+		// Record reservation_nights breakdown if pricingRepo is configured
+		if s.pricingRepo != nil && len(pBreakdown.Nights) > 0 {
+			var rNights []models.ReservationNight
+			for _, np := range pBreakdown.Nights {
+				rNights = append(rNights, models.ReservationNight{
+					ReservationID: resRow.ID,
+					Night:         np.Night,
+					PriceMinor:    np.PriceMinor,
+					RateType:      enums.RateType(np.Source),
+				})
+			}
+			_ = s.pricingRepo.CreateReservationNights(txCtx, rNights)
+		}
 
 		// Atomically lock calendar nights (rejects double-booking or booking over host block)
 		if err := s.calendarRepo.BookNights(txCtx, l.ID, resRow.ID, nights); err != nil {
@@ -467,6 +571,16 @@ func (s *ReservationService) CreateReservation(
 		} else if createdRes.Status == enums.ReservationStatusConfirmed {
 			_ = s.rdb.ScheduleTimer(ctx, fmt.Sprintf("auto_checkin:%s", createdRes.ID.String()), createdRes.CheckInAt)
 			_ = s.rdb.ScheduleTimer(ctx, fmt.Sprintf("auto_checkout:%s", createdRes.ID.String()), createdRes.CheckOutAt)
+		}
+	}
+
+	// Automatically create conversation and send initial guest note if provided
+	if s.messagingSvc != nil && createdRes != nil {
+		conv, err := s.messagingSvc.GetOrCreateConversation(ctx, createdRes.ID)
+		if err == nil && conv != nil && in.GuestMessage != nil && strings.TrimSpace(*in.GuestMessage) != "" {
+			_, _ = s.messagingSvc.SendMessage(ctx, actor.SubjectID, conv.ID, dtos.SendMessageInput{
+				Body: strings.TrimSpace(*in.GuestMessage),
+			})
 		}
 	}
 
@@ -669,6 +783,11 @@ func (s *ReservationService) CancelByGuest(
 				if err != nil {
 					return err
 				}
+
+				if s.payoutScheduler != nil {
+					_ = s.payoutScheduler.CancelPayoutSchedule(txCtx, payout.ID)
+				}
+
 				if err := s.audit.Record(txCtx, dtos.AuditEntryInput{
 					ActorType:   enums.ActorSystem,
 					ActorID:     nil,
@@ -694,6 +813,13 @@ func (s *ReservationService) CancelByGuest(
 				if err != nil {
 					return err
 				}
+
+				if s.payoutScheduler != nil {
+					if err := s.payoutScheduler.SchedulePayout(txCtx, updatedPayout.ID, updatedRes.ID, releaseAt); err != nil {
+						return fmt.Errorf("failed to schedule retained payout in EventBridge: %w", err)
+					}
+				}
+
 				if err := s.audit.Record(txCtx, dtos.AuditEntryInput{
 					ActorType:   enums.ActorSystem,
 					ActorID:     nil,
@@ -881,6 +1007,10 @@ func (s *ReservationService) AcceptByHost(
 		_ = s.rdb.ScheduleTimer(ctx, fmt.Sprintf("auto_checkout:%s", updatedRes.ID.String()), updatedRes.CheckOutAt)
 	}
 
+	if s.messagingSvc != nil {
+		_, _ = s.messagingSvc.GetOrCreateConversation(ctx, reservationID)
+	}
+
 	return s.GetReservationDetail(ctx, models.AuthActor{
 		SubjectID:   hostUserID,
 		SubjectType: "user",
@@ -1017,6 +1147,11 @@ func (s *ReservationService) CancelByHost(
 			if err != nil {
 				return err
 			}
+
+			if s.payoutScheduler != nil {
+				_ = s.payoutScheduler.CancelPayoutSchedule(txCtx, payout.ID)
+			}
+
 			if err := s.audit.Record(txCtx, dtos.AuditEntryInput{
 				ActorType:   actorType,
 				ActorID:     &hostUserID,
@@ -1062,7 +1197,6 @@ func (s *ReservationService) CheckInByHost(
 ) (*dtos.ReservationDetailResponse, error) {
 	now := s.clock.Now()
 	releaseAt := now.Add(time.Duration(s.cfg.PayoutReleaseAfterCheckInHours) * time.Hour)
-	var scheduledPayoutID *uuid.UUID
 
 	err := s.db.WithinTx(ctx, func(txCtx context.Context) error {
 		r, err := s.resRepo.FindByIDForUpdate(txCtx, reservationID)
@@ -1079,23 +1213,19 @@ func (s *ReservationService) CheckInByHost(
 			return err
 		}
 
-		r.Status = enums.ReservationStatusCheckedIn
-		r.CheckedInAt = &now
-		r.UpdatedAt = now
+		if payout, err := s.paymentRepo.FindPayoutByReservation(txCtx, r.ID); err == nil && payout != nil {
+			if s.payoutScheduler != nil {
+				if err := s.payoutScheduler.SchedulePayout(txCtx, payout.ID, r.ID, releaseAt); err != nil {
+					return fmt.Errorf("failed to schedule payout with EventBridge: %w", err)
+				}
+			}
 
-		updatedRes, err := s.resRepo.Update(txCtx, *r)
-		if err != nil {
-			return err
-		}
-
-		if payout, err := s.paymentRepo.FindPayoutByReservation(txCtx, updatedRes.ID); err == nil && payout != nil {
 			payout.ReleaseAt = &releaseAt
 			payout.UpdatedAt = now
 			updatedPayout, err := s.paymentRepo.UpdatePayout(txCtx, *payout)
 			if err != nil {
 				return err
 			}
-			scheduledPayoutID = &updatedPayout.ID
 
 			if err := s.audit.Record(txCtx, dtos.AuditEntryInput{
 				ActorType:   enums.ActorSystem,
@@ -1108,6 +1238,15 @@ func (s *ReservationService) CheckInByHost(
 			}); err != nil {
 				return err
 			}
+		}
+
+		r.Status = enums.ReservationStatusCheckedIn
+		r.CheckedInAt = &now
+		r.UpdatedAt = now
+
+		updatedRes, err := s.resRepo.Update(txCtx, *r)
+		if err != nil {
+			return err
 		}
 
 		return s.audit.Record(txCtx, dtos.AuditEntryInput{
@@ -1126,10 +1265,6 @@ func (s *ReservationService) CheckInByHost(
 	})
 	if err != nil {
 		return nil, err
-	}
-
-	if s.rdb != nil && scheduledPayoutID != nil {
-		_ = s.rdb.ScheduleTimer(ctx, fmt.Sprintf("release_payout:%s", scheduledPayoutID.String()), releaseAt)
 	}
 
 	return s.GetReservationDetail(ctx, models.AuthActor{
@@ -1257,7 +1392,6 @@ func (s *ReservationService) ProcessDueCheckIns(ctx context.Context, limit int) 
 	processed := 0
 	for _, item := range dueList {
 		releaseAt := now.Add(time.Duration(s.cfg.PayoutReleaseAfterCheckInHours) * time.Hour)
-		var payoutID *uuid.UUID
 
 		err := s.db.WithinTx(ctx, func(txCtx context.Context) error {
 			r, err := s.resRepo.FindByIDForUpdate(txCtx, item.ID)
@@ -1268,6 +1402,19 @@ func (s *ReservationService) ProcessDueCheckIns(ctx context.Context, limit int) 
 				return nil
 			}
 
+			if payout, err := s.paymentRepo.FindPayoutByReservation(txCtx, r.ID); err == nil && payout != nil {
+				if s.payoutScheduler != nil {
+					if err := s.payoutScheduler.SchedulePayout(txCtx, payout.ID, r.ID, releaseAt); err != nil {
+						return fmt.Errorf("failed to schedule payout in EventBridge: %w", err)
+					}
+				}
+				payout.ReleaseAt = &releaseAt
+				payout.UpdatedAt = now
+				if _, err := s.paymentRepo.UpdatePayout(txCtx, *payout); err != nil {
+					return err
+				}
+			}
+
 			r.Status = enums.ReservationStatusCheckedIn
 			r.CheckedInAt = &now
 			r.UpdatedAt = now
@@ -1275,14 +1422,6 @@ func (s *ReservationService) ProcessDueCheckIns(ctx context.Context, limit int) 
 			updatedRes, err := s.resRepo.Update(txCtx, *r)
 			if err != nil {
 				return err
-			}
-
-			if payout, err := s.paymentRepo.FindPayoutByReservation(txCtx, updatedRes.ID); err == nil && payout != nil {
-				payout.ReleaseAt = &releaseAt
-				payout.UpdatedAt = now
-				if updatedPayout, err := s.paymentRepo.UpdatePayout(txCtx, *payout); err == nil {
-					payoutID = &updatedPayout.ID
-				}
 			}
 
 			return s.audit.Record(txCtx, dtos.AuditEntryInput{
@@ -1303,9 +1442,6 @@ func (s *ReservationService) ProcessDueCheckIns(ctx context.Context, limit int) 
 			processed++
 			if s.rdb != nil {
 				_ = s.rdb.RemoveTimer(ctx, fmt.Sprintf("auto_checkin:%s", item.ID.String()))
-				if payoutID != nil {
-					_ = s.rdb.ScheduleTimer(ctx, fmt.Sprintf("release_payout:%s", payoutID.String()), releaseAt)
-				}
 			}
 		}
 	}
@@ -1333,6 +1469,8 @@ func (s *ReservationService) ProcessDueCheckOuts(ctx context.Context, limit int)
 
 			r.Status = enums.ReservationStatusCompleted
 			r.CompletedAt = &now
+			reviewDeadline := r.CheckOutAt.Add(14 * 24 * time.Hour)
+			r.ReviewDeadline = &reviewDeadline
 			r.UpdatedAt = now
 
 			updatedRes, err := s.resRepo.Update(txCtx, *r)
@@ -1362,6 +1500,9 @@ func (s *ReservationService) ProcessDueCheckOuts(ctx context.Context, limit int)
 
 // ReleaseDuePayouts releases scheduled payouts whose release_at (checked_in_at + 24h) <= now.
 func (s *ReservationService) ReleaseDuePayouts(ctx context.Context, limit int) (int, error) {
+	if s.payoutSvc != nil {
+		return s.payoutSvc.ReleaseDuePayouts(ctx, limit)
+	}
 	now := s.clock.Now()
 	dueList, err := s.paymentRepo.ListDuePayouts(ctx, now, limit)
 	if err != nil {

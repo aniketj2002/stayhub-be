@@ -131,6 +131,49 @@ func ComputePolicyRefund(res Reservation, rules []CancellationPolicyRule, cancel
 	}
 }
 
+// ComputeCustomRefund calculates a custom or discretionary refund breakdown that balances the ledger.
+func ComputeCustomRefund(res Reservation, refundAmountMinor int64) CancellationRefundBreakdown {
+	if refundAmountMinor <= 0 {
+		return CancellationRefundBreakdown{}
+	}
+	if refundAmountMinor >= res.GuestTotalMinor {
+		return ComputeFullRefund(res, time.Now())
+	}
+
+	accommodationSubtotal := res.NightlyTotalMinor + res.CleaningFeeMinor
+	var refundedAccomm int64
+	var refundedGuestFee int64
+
+	if res.GuestTotalMinor > 0 {
+		refundedAccomm = (accommodationSubtotal * refundAmountMinor) / res.GuestTotalMinor
+		refundedGuestFee = refundAmountMinor - refundedAccomm
+	}
+
+	retainedGross := accommodationSubtotal - refundedAccomm
+	retainedHostFee := MulBPS(retainedGross, res.HostFeeBPS)
+	retainedHostNet := retainedGross - retainedHostFee
+
+	refundedHostFee := res.HostFeeMinor - retainedHostFee
+	refundedHostNet := refundedAccomm - refundedHostFee
+
+	pct := int((refundAmountMinor * 100) / res.GuestTotalMinor)
+
+	return CancellationRefundBreakdown{
+		PolicyCode:                 res.CancellationPolicy,
+		RefundPct:                  pct,
+		RefundsServiceFee:          refundedGuestFee > 0,
+		RefundedAccommodationMinor: refundedAccomm,
+		RefundedGuestFeeMinor:      refundedGuestFee,
+		RefundAmountMinor:          refundAmountMinor,
+		NonRefundableMinor:         res.GuestTotalMinor - refundAmountMinor,
+		RetainedGrossMinor:         retainedGross,
+		RetainedHostFeeMinor:       retainedHostFee,
+		RetainedHostNetMinor:       retainedHostNet,
+		RefundedHostFeeMinor:       refundedHostFee,
+		RefundedHostNetMinor:       refundedHostNet,
+	}
+}
+
 // StayQuoteBreakdown holds exact minor-unit pricing and fee calculations.
 type StayQuoteBreakdown struct {
 	Nights                     int   `json:"nights"`
@@ -252,6 +295,7 @@ type Payout struct {
 	ReleaseAt      *time.Time         `db:"release_at" json:"release_at,omitempty"`
 	ReleasedAt     *time.Time         `db:"released_at" json:"released_at,omitempty"`
 	HeldReason     *string            `db:"held_reason" json:"held_reason,omitempty"`
+	HeldBy         *uuid.UUID         `db:"held_by" json:"held_by,omitempty"`
 	IdempotencyKey string             `db:"idempotency_key" json:"idempotency_key"`
 	SimulatedRef   *string            `db:"simulated_ref" json:"simulated_ref,omitempty"`
 	CreatedAt      time.Time          `db:"created_at" json:"created_at"`

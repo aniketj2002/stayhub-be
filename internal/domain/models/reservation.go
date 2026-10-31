@@ -28,6 +28,7 @@ type Reservation struct {
 	GuestMessage       *string                 `db:"guest_message" json:"guest_message,omitempty"`
 	Currency           string                  `db:"currency" json:"currency"`
 	NightlyTotalMinor  int64                   `db:"nightly_total_minor" json:"nightly_total_minor"`
+	DiscountMinor      int64                   `db:"discount_minor" json:"discount_minor"`
 	CleaningFeeMinor   int64                   `db:"cleaning_fee_minor" json:"cleaning_fee_minor"`
 	GuestFeeBPS        int                     `db:"guest_fee_bps" json:"guest_fee_bps"`
 	GuestFeeMinor      int64                   `db:"guest_fee_minor" json:"guest_fee_minor"`
@@ -36,6 +37,7 @@ type Reservation struct {
 	HostFeeMinor       int64                   `db:"host_fee_minor" json:"host_fee_minor"`
 	HostNetMinor       int64                   `db:"host_net_minor" json:"host_net_minor"`
 	CancellationPolicy string                  `db:"cancellation_policy" json:"cancellation_policy"`
+	FeeConfigID        *uuid.UUID              `db:"fee_config_id" json:"fee_config_id,omitempty"`
 	RequestExpiresAt   *time.Time              `db:"request_expires_at" json:"request_expires_at,omitempty"`
 	DecidedAt          *time.Time              `db:"decided_at" json:"decided_at,omitempty"`
 	DeclineReason      *string                 `db:"decline_reason" json:"decline_reason,omitempty"`
@@ -44,6 +46,7 @@ type Reservation struct {
 	CancelReason       *string                 `db:"cancel_reason" json:"cancel_reason,omitempty"`
 	CheckedInAt        *time.Time              `db:"checked_in_at" json:"checked_in_at,omitempty"`
 	CompletedAt        *time.Time              `db:"completed_at" json:"completed_at,omitempty"`
+	ReviewDeadline     *time.Time              `db:"review_deadline" json:"review_deadline,omitempty"`
 	Version            int                     `db:"version" json:"version"`
 	CreatedAt          time.Time               `db:"created_at" json:"created_at"`
 	UpdatedAt          time.Time               `db:"updated_at" json:"updated_at"`

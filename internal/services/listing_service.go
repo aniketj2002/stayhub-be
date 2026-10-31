@@ -179,15 +179,17 @@ func (s *ListingService) ListHostListings(ctx context.Context, userID uuid.UUID)
 		}
 
 		summary := dtos.HostListingSummaryResponse{
-			ID:         l.ID,
-			HostID:     l.HostID,
-			Status:     l.Status,
-			Currency:   s.cfg.DefaultCurrency,
-			WizardStep: 1,
-			HostRole:   lh.Role,
-			HostAccess: lh,
-			CreatedAt:  l.CreatedAt,
-			UpdatedAt:  l.UpdatedAt,
+			ID:          l.ID,
+			HostID:      l.HostID,
+			Status:      l.Status,
+			Currency:    s.cfg.DefaultCurrency,
+			WizardStep:  1,
+			RatingAvg:   l.RatingAvg,
+			ReviewCount: l.ReviewCount,
+			HostRole:    lh.Role,
+			HostAccess:  lh,
+			CreatedAt:   l.CreatedAt,
+			UpdatedAt:   l.UpdatedAt,
 		}
 		if ver != nil {
 			summary.Title = ver.Title

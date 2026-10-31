@@ -15,6 +15,9 @@ type CalendarRepository interface {
 	UnblockNights(ctx context.Context, listingID uuid.UUID, startDate, endDate time.Time) error
 	BookNights(ctx context.Context, listingID, reservationID uuid.UUID, nights []time.Time) error
 	ReleaseReservationNights(ctx context.Context, reservationID uuid.UUID) error
+	SyncICalBlockedNights(ctx context.Context, listingID, feedID uuid.UUID, nights []time.Time) error
+	RemoveICalBlockedNights(ctx context.Context, feedID uuid.UUID) error
+	ListAllFutureByListing(ctx context.Context, listingID uuid.UUID, from time.Time) ([]models.ListingCalendar, error)
 }
 
 type CalendarService interface {

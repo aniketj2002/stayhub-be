@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/stayhub/backend/internal/domain/enums"
 	"github.com/stayhub/backend/internal/domain/models"
 )
 
@@ -70,11 +71,12 @@ func ToUserResponse(u models.User, avatarURL *string) UserResponse {
 }
 
 type AdminUserResponse struct {
-	ID        uuid.UUID `json:"id"`
-	Email     string    `json:"email"`
-	FullName  string    `json:"full_name"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID        uuid.UUID       `json:"id"`
+	Email     string          `json:"email"`
+	FullName  string          `json:"full_name"`
+	Role      enums.AdminRole `json:"role"`
+	CreatedAt time.Time       `json:"created_at"`
+	UpdatedAt time.Time       `json:"updated_at"`
 }
 
 func ToAdminUserResponse(a models.AdminUser) AdminUserResponse {
@@ -82,6 +84,7 @@ func ToAdminUserResponse(a models.AdminUser) AdminUserResponse {
 		ID:        a.ID,
 		Email:     a.Email,
 		FullName:  a.FullName,
+		Role:      a.Role,
 		CreatedAt: a.CreatedAt,
 		UpdatedAt: a.UpdatedAt,
 	}

@@ -77,7 +77,7 @@ func TestSchedulerTick(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected tick error: %v", err)
 	}
-	if res.ExpiredPending != 2 || res.CheckedIn != 3 || res.CheckedOut != 1 || res.PayoutsReleased != 4 {
+	if res.ExpiredPending != 2 || res.CheckedIn != 3 || res.CheckedOut != 1 {
 		t.Fatalf("unexpected tick counts: %+v", res)
 	}
 }

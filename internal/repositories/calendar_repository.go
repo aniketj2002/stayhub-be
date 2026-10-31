@@ -159,3 +159,78 @@ func (r *CalendarRepository) ReleaseReservationNights(ctx context.Context, reser
 	}
 	return nil
 }
+
+func (r *CalendarRepository) SyncICalBlockedNights(ctx context.Context, listingID, feedID uuid.UUID, nights []time.Time) error {
+	// 1. Remove previous nights for this feed that are not in the incoming set
+	if len(nights) == 0 {
+		return r.RemoveICalBlockedNights(ctx, feedID)
+	}
+
+	nightStrings := make([]string, len(nights))
+	for i, n := range nights {
+		nightStrings[i] = n.Format("2006-01-02")
+	}
+
+	const delQ = `
+		DELETE FROM listing_calendar
+		WHERE listing_id = $1 AND ical_feed_id = $2 AND NOT (night = ANY($3::date[]))
+	`
+	if _, err := r.db.Conn(ctx).Exec(ctx, delQ, listingID, feedID, nightStrings); err != nil {
+		return fmt.Errorf("delete obsolete ical nights: %w", err)
+	}
+
+	// 2. Upsert new incoming blocked nights, skipping if night is already booked
+	const upsertQ = `
+		INSERT INTO listing_calendar (listing_id, night, status, block_reason, ical_feed_id)
+		VALUES ($1, $2, 'blocked', 'ical_sync', $3)
+		ON CONFLICT (listing_id, night) DO UPDATE
+		SET ical_feed_id = EXCLUDED.ical_feed_id,
+		    block_reason = EXCLUDED.block_reason
+		WHERE listing_calendar.status <> 'booked'
+	`
+	for _, ns := range nightStrings {
+		if _, err := r.db.Conn(ctx).Exec(ctx, upsertQ, listingID, ns, feedID); err != nil {
+			return fmt.Errorf("upsert ical night %s: %w", ns, err)
+		}
+	}
+	return nil
+}
+
+func (r *CalendarRepository) RemoveICalBlockedNights(ctx context.Context, feedID uuid.UUID) error {
+	const q = `DELETE FROM listing_calendar WHERE ical_feed_id = $1`
+	if _, err := r.db.Conn(ctx).Exec(ctx, q, feedID); err != nil {
+		return fmt.Errorf("remove ical blocked nights: %w", err)
+	}
+	return nil
+}
+
+func (r *CalendarRepository) ListAllFutureByListing(ctx context.Context, listingID uuid.UUID, from time.Time) ([]models.ListingCalendar, error) {
+	const q = `
+		SELECT listing_id, night, status, reservation_id, block_reason, created_at
+		FROM listing_calendar
+		WHERE listing_id = $1 AND night >= $2
+		ORDER BY night ASC
+	`
+	rows, err := r.db.Conn(ctx).Query(ctx, q, listingID, from.Format("2006-01-02"))
+	if err != nil {
+		return nil, fmt.Errorf("list future calendar: %w", err)
+	}
+	defer rows.Close()
+
+	var list []models.ListingCalendar
+	for rows.Next() {
+		var c models.ListingCalendar
+		if err := rows.Scan(
+			&c.ListingID,
+			&c.Night,
+			&c.Status,
+			&c.ReservationID,
+			&c.BlockReason,
+			&c.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan future calendar: %w", err)
+		}
+		list = append(list, c)
+	}
+	return list, rows.Err()
+}

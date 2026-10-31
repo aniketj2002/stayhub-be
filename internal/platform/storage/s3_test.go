@@ -50,3 +50,23 @@ func TestAWSS3PresignPutAndPublicURL(t *testing.T) {
 		t.Fatalf("unexpected public URL: %s", pubURL)
 	}
 }
+
+func TestLocalPublicURLUsesAPIFileRoute(t *testing.T) {
+	store := NewStorage(&config.Config{
+		S3Endpoint:      "http://localhost:9000",
+		S3PublicBaseURL: "http://localhost:9000/stayhub-media",
+		S3Region:        "eu-west-1",
+		S3Bucket:        "stayhub-media",
+		S3AccessKey:     "minioadmin",
+		S3SecretKey:     "minioadmin",
+		S3UsePathStyle:  true,
+	})
+	got := store.PublicURL("uploads/listing_photo/user/photo.jpg")
+	want := "/api/v1/media/file/uploads/listing_photo/user/photo.jpg"
+	if got != want {
+		t.Fatalf("public URL = %s, want %s", got, want)
+	}
+	if store.PublicURL("https://images.example/photo.jpg") != "https://images.example/photo.jpg" {
+		t.Fatal("absolute photo URLs should be returned unchanged")
+	}
+}

@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/stayhub/backend/internal/domain/apperrors"
+	"github.com/stayhub/backend/internal/domain/dtos"
 	"github.com/stayhub/backend/internal/domain/interfaces"
 	"github.com/stayhub/backend/internal/domain/models"
 	"github.com/stayhub/backend/internal/platform/db"
@@ -30,8 +32,8 @@ const reservationSelectCols = `
 	TRIM(currency), nightly_total_minor, cleaning_fee_minor,
 	guest_fee_bps, guest_fee_minor, guest_total_minor,
 	host_fee_bps, host_fee_minor, host_net_minor,
-	cancellation_policy, request_expires_at, decided_at, decline_reason,
-	cancelled_at, cancelled_by, cancel_reason, checked_in_at, completed_at,
+	cancellation_policy, fee_config_id, discount_minor, request_expires_at, decided_at, decline_reason,
+	cancelled_at, cancelled_by, cancel_reason, checked_in_at, completed_at, review_deadline,
 	version, created_at, updated_at
 `
 
@@ -65,6 +67,8 @@ func scanReservation(row pgx.Row) (*models.Reservation, error) {
 		&r.HostFeeMinor,
 		&r.HostNetMinor,
 		&r.CancellationPolicy,
+		&r.FeeConfigID,
+		&r.DiscountMinor,
 		&r.RequestExpiresAt,
 		&r.DecidedAt,
 		&r.DeclineReason,
@@ -73,6 +77,7 @@ func scanReservation(row pgx.Row) (*models.Reservation, error) {
 		&r.CancelReason,
 		&r.CheckedInAt,
 		&r.CompletedAt,
+		&r.ReviewDeadline,
 		&r.Version,
 		&r.CreatedAt,
 		&r.UpdatedAt,
@@ -108,19 +113,19 @@ func (r *ReservationRepository) Create(ctx context.Context, res models.Reservati
 			status, is_instant_book, check_in, check_out,
 			check_in_time, check_out_time, timezone, check_in_at, check_out_at,
 			guests, guest_message, currency,
-			nightly_total_minor, cleaning_fee_minor,
+			nightly_total_minor, cleaning_fee_minor, discount_minor,
 			guest_fee_bps, guest_fee_minor, guest_total_minor,
 			host_fee_bps, host_fee_minor, host_net_minor,
-			cancellation_policy, request_expires_at, decided_at
+			cancellation_policy, fee_config_id, request_expires_at, decided_at
 		) VALUES (
 			$1, $2, $3, $4, $5, $6,
 			$7, $8, $9, $10,
 			$11::time, $12::time, $13, $14, $15,
 			$16, $17, $18,
-			$19, $20,
-			$21, $22, $23,
-			$24, $25, $26,
-			$27, $28, $29
+			$19, $20, $21,
+			$22, $23, $24,
+			$25, $26, $27,
+			$28, $29, $30, $31
 		)
 		RETURNING %s
 	`, reservationSelectCols)
@@ -148,6 +153,7 @@ func (r *ReservationRepository) Create(ctx context.Context, res models.Reservati
 		res.Currency,
 		res.NightlyTotalMinor,
 		res.CleaningFeeMinor,
+		res.DiscountMinor,
 		res.GuestFeeBPS,
 		res.GuestFeeMinor,
 		res.GuestTotalMinor,
@@ -155,6 +161,7 @@ func (r *ReservationRepository) Create(ctx context.Context, res models.Reservati
 		res.HostFeeMinor,
 		res.HostNetMinor,
 		res.CancellationPolicy,
+		res.FeeConfigID,
 		res.RequestExpiresAt,
 		res.DecidedAt,
 	)
@@ -199,9 +206,24 @@ func (r *ReservationRepository) Update(ctx context.Context, res models.Reservati
 		    cancel_reason = $8,
 		    checked_in_at = $9,
 		    completed_at = $10,
-		    updated_at = $11,
+		    check_in = $11,
+		    check_out = $12,
+		    check_in_at = $13,
+		    check_out_at = $14,
+		    guests = $15,
+		    nightly_total_minor = $16,
+		    discount_minor = $17,
+		    cleaning_fee_minor = $18,
+		    guest_fee_bps = $19,
+		    guest_fee_minor = $20,
+		    guest_total_minor = $21,
+		    host_fee_bps = $22,
+		    host_fee_minor = $23,
+		    host_net_minor = $24,
+		    review_deadline = $25,
+		    updated_at = $26,
 		    version = version + 1
-		WHERE id = $1 AND version = $12
+		WHERE id = $1 AND version = $27
 		RETURNING %s
 	`, reservationSelectCols)
 
@@ -218,6 +240,21 @@ func (r *ReservationRepository) Update(ctx context.Context, res models.Reservati
 		res.CancelReason,
 		res.CheckedInAt,
 		res.CompletedAt,
+		res.CheckIn,
+		res.CheckOut,
+		res.CheckInAt,
+		res.CheckOutAt,
+		res.Guests,
+		res.NightlyTotalMinor,
+		res.DiscountMinor,
+		res.CleaningFeeMinor,
+		res.GuestFeeBPS,
+		res.GuestFeeMinor,
+		res.GuestTotalMinor,
+		res.HostFeeBPS,
+		res.HostFeeMinor,
+		res.HostNetMinor,
+		res.ReviewDeadline,
 		res.UpdatedAt,
 		res.Version,
 	)
@@ -315,4 +352,95 @@ func (r *ReservationRepository) ListDueCheckOuts(ctx context.Context, now time.T
 	}
 	defer rows.Close()
 	return scanReservations(rows)
+}
+
+func (r *ReservationRepository) ListAdmin(
+	ctx context.Context,
+	f dtos.AdminReservationFilter,
+) ([]models.Reservation, int, error) {
+	var clauses []string
+	var args []any
+	argIdx := 1
+
+	if f.Code != "" {
+		clauses = append(clauses, fmt.Sprintf("code ILIKE $%d", argIdx))
+		args = append(args, "%"+f.Code+"%")
+		argIdx++
+	}
+	if f.GuestID != nil {
+		clauses = append(clauses, fmt.Sprintf("guest_id = $%d", argIdx))
+		args = append(args, *f.GuestID)
+		argIdx++
+	}
+	if f.HostID != nil {
+		clauses = append(clauses, fmt.Sprintf("host_id = $%d", argIdx))
+		args = append(args, *f.HostID)
+		argIdx++
+	}
+	if f.ListingID != nil {
+		clauses = append(clauses, fmt.Sprintf("listing_id = $%d", argIdx))
+		args = append(args, *f.ListingID)
+		argIdx++
+	}
+	if f.Status != nil {
+		clauses = append(clauses, fmt.Sprintf("status = $%d", argIdx))
+		args = append(args, *f.Status)
+		argIdx++
+	}
+	if f.From != nil {
+		clauses = append(clauses, fmt.Sprintf("check_in >= $%d", argIdx))
+		args = append(args, *f.From)
+		argIdx++
+	}
+	if f.To != nil {
+		clauses = append(clauses, fmt.Sprintf("check_out <= $%d", argIdx))
+		args = append(args, *f.To)
+		argIdx++
+	}
+
+	whereSQL := ""
+	if len(clauses) > 0 {
+		whereSQL = "WHERE " + strings.Join(clauses, " AND ")
+	}
+
+	countQ := fmt.Sprintf(`SELECT count(*) FROM reservations %s`, whereSQL)
+	var total int
+	if err := r.db.Conn(ctx).QueryRow(ctx, countQ, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count admin reservations: %w", err)
+	}
+
+	limit := f.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	offset := f.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	q := fmt.Sprintf(`
+		SELECT %s
+		FROM reservations
+		%s
+		ORDER BY created_at DESC
+		LIMIT $%d OFFSET $%d
+	`, reservationSelectCols, whereSQL, argIdx, argIdx+1)
+
+	args = append(args, limit, offset)
+
+	rows, err := r.db.Conn(ctx).Query(ctx, q, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("query admin reservations: %w", err)
+	}
+	defer rows.Close()
+
+	var out []models.Reservation
+	for rows.Next() {
+		res, err := scanReservation(rows)
+		if err != nil {
+			return nil, 0, fmt.Errorf("scan reservation: %w", err)
+		}
+		out = append(out, *res)
+	}
+	return out, total, rows.Err()
 }

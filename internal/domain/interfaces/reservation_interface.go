@@ -19,6 +19,7 @@ type ReservationRepository interface {
 	ListDuePendingExpirations(ctx context.Context, now time.Time, limit int) ([]models.Reservation, error)
 	ListDueCheckIns(ctx context.Context, now time.Time, limit int) ([]models.Reservation, error)
 	ListDueCheckOuts(ctx context.Context, now time.Time, limit int) ([]models.Reservation, error)
+	ListAdmin(ctx context.Context, f dtos.AdminReservationFilter) ([]models.Reservation, int, error)
 }
 
 type PaymentRepository interface {
@@ -28,6 +29,7 @@ type PaymentRepository interface {
 
 	CreatePayout(ctx context.Context, p models.Payout) (*models.Payout, error)
 	FindPayoutByReservation(ctx context.Context, reservationID uuid.UUID) (*models.Payout, error)
+	FindPayoutByID(ctx context.Context, id uuid.UUID) (*models.Payout, error)
 	FindPayoutByIDForUpdate(ctx context.Context, id uuid.UUID) (*models.Payout, error)
 	UpdatePayout(ctx context.Context, p models.Payout) (*models.Payout, error)
 	ListPayoutsByListingIDs(ctx context.Context, listingIDs []uuid.UUID) ([]dtos.EarningsPayoutItem, error)

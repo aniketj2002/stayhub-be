@@ -15,17 +15,28 @@ type SearchListingsFilter struct {
 	CheckOut      *time.Time
 	Guests        int
 	PropertyType  string
+	PropertyTypes []string
 	InstantBook   *bool
 	MinPriceMinor *int64
 	MaxPriceMinor *int64
 	Amenities     []string
+	Bedrooms      *int
+	Beds          *int
+	Bathrooms     *float64
+	GuestFavorite *bool
+	Superhost     *bool
+	NeLat         *float64
+	NeLng         *float64
+	SwLat         *float64
+	SwLng         *float64
 	Limit         int
 	Offset        int
 }
 
 type SearchListingRow struct {
-	Listing     models.Listing
-	LiveVersion models.ListingVersion
+	Listing         models.Listing
+	LiveVersion     models.ListingVersion
+	HostIsSuperhost bool
 }
 
 type SearchListingCard struct {
@@ -34,18 +45,28 @@ type SearchListingCard struct {
 	LiveVersionID     uuid.UUID `json:"live_version_id"`
 	PropertyType      string    `json:"property_type"`
 	Title             string    `json:"title"`
+	Description       *string   `json:"description,omitempty"`
 	City              string    `json:"city"`
 	Region            *string   `json:"region,omitempty"`
 	Country           string    `json:"country"`
+	Latitude          *float64  `json:"latitude,omitempty"`
+	Longitude         *float64  `json:"longitude,omitempty"`
+	Lat               *float64  `json:"lat,omitempty"`
+	Lng               *float64  `json:"lng,omitempty"`
 	MaxGuests         int       `json:"max_guests"`
+	Bedrooms          *int      `json:"bedrooms,omitempty"`
+	Beds              *int      `json:"beds,omitempty"`
+	Bathrooms         *float64  `json:"bathrooms,omitempty"`
 	InstantBook       bool      `json:"instant_book"`
 	Currency          string    `json:"currency"`
 	NightlyPriceMinor int64     `json:"nightly_price_minor"`
 	CleaningFeeMinor  int64     `json:"cleaning_fee_minor"`
 	CoverPhotoURL     *string   `json:"cover_photo_url"`
 	PhotoURLs         []string  `json:"photo_urls"`
-	Rating            *float64  `json:"rating"`       // Always null in V1
-	ReviewCount       int       `json:"review_count"` // 0 in V1
+	Rating            *float64  `json:"rating"`
+	ReviewCount       int       `json:"review_count"`
+	IsGuestFavorite   bool      `json:"is_guest_favorite"`
+	IsSuperhost       bool      `json:"is_superhost"`
 	Nights            *int      `json:"nights,omitempty"`
 	NightlyTotalMinor *int64    `json:"nightly_total_minor,omitempty"`
 	GuestFeeMinor     *int64    `json:"guest_fee_minor,omitempty"`
@@ -53,10 +74,12 @@ type SearchListingCard struct {
 }
 
 type PublicHostProfile struct {
-	ID        uuid.UUID `json:"id"`
-	FullName  string    `json:"full_name"`
-	AvatarURL *string   `json:"avatar_url,omitempty"`
-	JoinedAt  time.Time `json:"joined_at"`
+	ID          uuid.UUID `json:"id"`
+	FullName    string    `json:"full_name"`
+	AvatarURL   *string   `json:"avatar_url,omitempty"`
+	JoinedAt    time.Time `json:"joined_at"`
+	IsSuperhost bool      `json:"is_superhost"`
+	Bio         *string   `json:"bio,omitempty"`
 }
 
 type PublicListingDetailResponse struct {
@@ -70,12 +93,18 @@ type PublicListingDetailResponse struct {
 	City               string                    `json:"city"`
 	Region             *string                   `json:"region,omitempty"`
 	Country            string                    `json:"country"`
+	Latitude           *float64                  `json:"latitude,omitempty"`
+	Longitude          *float64                  `json:"longitude,omitempty"`
 	Timezone           string                    `json:"timezone"`
 	MaxGuests          int                       `json:"max_guests"`
+	Bedrooms           *int                      `json:"bedrooms,omitempty"`
+	Beds               *int                      `json:"beds,omitempty"`
+	Bathrooms          *float64                  `json:"bathrooms,omitempty"`
 	BasePriceMinor     int64                     `json:"base_price_minor"`
 	CleaningFeeMinor   int64                     `json:"cleaning_fee_minor"`
 	Currency           string                    `json:"currency"`
 	InstantBook        bool                      `json:"instant_book"`
+	IsGuestFavorite    bool                      `json:"is_guest_favorite"`
 	CheckInTime        string                    `json:"check_in_time"`
 	CheckOutTime       string                    `json:"check_out_time"`
 	HouseRules         string                    `json:"house_rules"`

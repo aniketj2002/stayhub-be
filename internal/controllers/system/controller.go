@@ -60,3 +60,36 @@ func (ctrl *Controller) Healthz(c *gin.Context) {
 		},
 	})
 }
+
+func (ctrl *Controller) Readyz(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
+	defer cancel()
+
+	pgStatus := "ok"
+	if err := ctrl.db.Ping(ctx); err != nil {
+		pgStatus = "unhealthy: " + err.Error()
+	}
+
+	redisStatus := "ok"
+	if ctrl.redis != nil {
+		if err := ctrl.redis.Ping(ctx); err != nil {
+			redisStatus = "unhealthy: " + err.Error()
+		}
+	}
+
+	ready := pgStatus == "ok" && redisStatus == "ok"
+	code := http.StatusOK
+	if !ready {
+		code = http.StatusServiceUnavailable
+	}
+
+	c.JSON(code, gin.H{
+		"status":       map[bool]string{true: "ready", false: "not_ready"}[ready],
+		"version_mode": ctrl.cfg.VersionMode,
+		"timestamp":    ctrl.clock.Now().Format(time.RFC3339),
+		"checks": gin.H{
+			"database": pgStatus,
+			"redis":    redisStatus,
+		},
+	})
+}
